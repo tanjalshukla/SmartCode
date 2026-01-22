@@ -148,12 +148,17 @@ def _build_patch_from_updates(
                 old_content = file_path.read_text()
             except Exception:
                 old_content = ""
-        if new_content == old_content:
+        old_norm = _normalize_line_endings(old_content)
+        new_norm = _normalize_line_endings(new_content)
+        old_has_trailing_newline = old_content.endswith("\n") or old_content.endswith("\r\n")
+        if old_has_trailing_newline and new_norm and not new_norm.endswith("\n"):
+            new_norm += "\n"
+        if new_norm == old_norm:
             continue
         fromfile = "/dev/null" if not file_path.exists() else f"a/{path}"
         tofile = f"b/{path}"
-        old_lines = old_content.splitlines(keepends=True)
-        new_lines = new_content.splitlines(keepends=True)
+        old_lines = old_norm.splitlines(keepends=True)
+        new_lines = new_norm.splitlines(keepends=True)
         diff_lines = list(
             difflib.unified_diff(
                 old_lines, new_lines, fromfile=fromfile, tofile=tofile, lineterm=""
@@ -166,6 +171,20 @@ def _build_patch_from_updates(
     if patch_text and not patch_text.endswith("\n"):
         patch_text += "\n"
     return patch_text, touched
+
+
+def _normalize_line_endings(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _normalize_new_content(old_content: str, new_content: str) -> str:
+    old_has_trailing_newline = old_content.endswith("\n") or old_content.endswith("\r\n")
+    new_norm = _normalize_line_endings(new_content)
+    if old_has_trailing_newline and new_norm and not new_norm.endswith("\n"):
+        new_norm += "\n"
+    if "\r\n" in old_content:
+        return new_norm.replace("\n", "\r\n")
+    return new_norm
 
 
 def _format_expiry(expires_at: int | None) -> str:
@@ -547,7 +566,12 @@ def run(
             continue
         file_path = repo_root / path
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(content)
+        try:
+            current = file_path.read_text()
+        except Exception:
+            current = ""
+        normalized = _normalize_new_content(current, content)
+        file_path.write_text(normalized)
 
     print("[green]Patch applied successfully.[/green]")
 
