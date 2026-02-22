@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from .phase import WorkflowPhase
 
 
 class ReadRequest(BaseModel):
@@ -36,6 +38,7 @@ class IntentDeclaration(BaseModel):
     planned_files: list[str]
     planned_actions: list[Literal["edit_code", "add_tests", "run_tests"]]
     planned_commands: list[str]
+    workflow_phase: WorkflowPhase | None = None
     notes: str | None = None
 
     @field_validator("planned_files")
@@ -52,3 +55,22 @@ class IntentDeclaration(BaseModel):
                 raise ValueError("planned_files must not escape repo")
             normalized.append(norm)
         return normalized
+
+
+class CheckInMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["check_in"]
+    reason: str
+    check_in_type: Literal[
+        "plan_review",
+        "decision_point",
+        "progress_update",
+        "deviation_notice",
+        "phase_transition",
+        "uncertainty",
+    ]
+    content: str
+    options: list[str] | None = None
+    assumptions: list[str] | None = None
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)

@@ -9,6 +9,7 @@ class RepoError(RuntimeError):
 
 
 def get_repo_root() -> Path:
+    """Resolve git repository root or raise RepoError."""
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],

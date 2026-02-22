@@ -1,0 +1,395 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import boto3
+import typer
+from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
+from rich import print
+from rich.prompt import Prompt
+from rich.table import Table
+
+from ..agent_client import ASK_SYSTEM_PROMPT, ClaudeClient, RUN_SYSTEM_PROMPT
+from ..cli_shared import read_file_context as _read_file_context
+from ..cli_shared import resolve_config as _resolve_config
+from ..commands.shared import open_trust_db, require_repo_root, try_repo_root
+from ..config import SAConfig, default_region, env_model_id, load_config, save_config
+from ..constraints import parse_constraints_file
+from ..session import ClaudeSession
+
+
+def _resolve_config_or_exit(
+    repo_root: Path,
+    model_id: str | None,
+    region: str | None,
+):
+    try:
+        return _resolve_config(repo_root, model_id, region)
+    except typer.BadParameter as exc:
+        print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+
+
+def doctor(
+    model_id: str = typer.Option(
+        None,
+        "--model-id",
+        help="Bedrock inference profile ID/ARN.",
+    ),
+    region: str = typer.Option(None, "--region", help="AWS region for Bedrock."),
+    prompt: str = typer.Option(
+        "Say OK and nothing else.",
+        "--prompt",
+        help="Prompt sent to the model.",
+    ),
+):
+    """Verify AWS identity and Bedrock invocation."""
+    region = region or default_region()
+    print(f"[bold]Region:[/bold] {region}")
+
+    try:
+        sts = boto3.client("sts", region_name=region)
+        ident = sts.get_caller_identity()
+        print("[bold]AWS Identity:[/bold]")
+        print(json.dumps(ident, indent=2))
+    except (ClientError, BotoCoreError, NoCredentialsError) as exc:
+        print("[red]STS call failed.[/red]")
+        print(str(exc))
+        raise typer.Exit(code=1)
+
+    if not model_id:
+        model_id = env_model_id()
+    if not model_id:
+        print("\n[yellow]No --model-id provided.[/yellow]")
+        raise typer.Exit(code=0)
+
+    try:
+        client = ClaudeClient(model_id=model_id, region=region)
+        session = ClaudeSession(RUN_SYSTEM_PROMPT)
+        session.add_user(prompt)
+        response = client._call(session, max_tokens=16, temperature=0)
+        print("\n[bold green]Bedrock Claude OK[/bold green]")
+        print("[bold]Model output:[/bold]")
+        print(response)
+    except Exception as exc:
+        print("\n[red]Bedrock invoke failed.[/red]")
+        print(str(exc))
+        raise typer.Exit(code=2)
+
+
+def ask(
+    question: str = typer.Argument(..., help="Question for the model."),
+    model_id: str = typer.Option(None, "--model-id", help="Bedrock inference profile ID/ARN."),
+    region: str = typer.Option(None, "--region", help="AWS region for Bedrock."),
+    files: list[str] = typer.Option(None, "--file", "-f", help="Repo-relative file to include as context."),
+):
+    """Ask a question without making any code changes."""
+    repo_root = try_repo_root()
+
+    if files and repo_root is None:
+        print("[red]Cannot resolve repo root for file context.[/red]")
+        raise typer.Exit(code=1)
+
+    config = _resolve_config_or_exit(
+        repo_root if repo_root is not None else Path.cwd(),
+        model_id,
+        region,
+    )
+
+    client = ClaudeClient(model_id=config.model_id, region=config.aws_region)
+    session = ClaudeSession(ASK_SYSTEM_PROMPT)
+
+    context_text = ""
+    if files and repo_root is not None:
+        context_map = _read_file_context(repo_root, files, max_chars=config.read_max_chars)
+        blocks = []
+        for path, content in context_map.items():
+            blocks.append(f"FILE: {path}\n-----\n{content}\n-----")
+        context_text = "\n\n".join(blocks)
+
+    if context_text:
+        session.add_user(f"Question: {question}\n\nContext:\n{context_text}")
+    else:
+        session.add_user(question)
+
+    try:
+        response = client._call(session, max_tokens=config.max_tokens, temperature=config.temperature)
+    except Exception as exc:
+        print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+
+    print(response)
+
+
+def init(
+    model_id: str = typer.Option(..., "--model-id", help="Bedrock inference profile ID/ARN."),
+    region: str = typer.Option(None, "--region", help="AWS region for Bedrock."),
+):
+    """Initialize .sc config and trust DB."""
+    repo_root = require_repo_root()
+
+    config = SAConfig(model_id=model_id, aws_region=region or default_region())
+    config_path = save_config(repo_root, config)
+    open_trust_db(repo_root)
+
+    print("[green]Initialized Semantic Autonomy config.[/green]")
+    print(f"Config: {config_path}")
+
+
+def set_threshold(
+    threshold: int = typer.Argument(..., help="Approvals required for permanent auto-apply."),
+):
+    """Update the permanent approval threshold in .sc/config.json."""
+    repo_root = require_repo_root()
+
+    config = load_config(repo_root)
+    if config is None:
+        print("[red]Config not found. Run `sc init` first.[/red]")
+        raise typer.Exit(code=1)
+    if threshold < 0:
+        print("[red]Threshold must be non-negative.[/red]")
+        raise typer.Exit(code=1)
+    config.permanent_approval_threshold = threshold
+    save_config(repo_root, config)
+    print(f"[green]Updated permanent_approval_threshold to {threshold}.[/green]")
+
+
+def set_verification_cmd(
+    command: str | None = typer.Argument(
+        None,
+        help="Verification command to run after apply (e.g. 'pytest -q').",
+    ),
+    clear: bool = typer.Option(False, "--clear", help="Clear custom verification command."),
+):
+    """Configure post-apply verification command in .sc/config.json."""
+    repo_root = require_repo_root()
+
+    config = load_config(repo_root)
+    if config is None:
+        print("[red]Config not found. Run `sc init` first.[/red]")
+        raise typer.Exit(code=1)
+
+    if clear:
+        config.verification_command = None
+        save_config(repo_root, config)
+        print("[green]Cleared verification command.[/green]")
+        return
+
+    if not command or not command.strip():
+        print("[red]Provide a command or use --clear.[/red]")
+        raise typer.Exit(code=1)
+
+    config.verification_command = command.strip()
+    save_config(repo_root, config)
+    print(f"[green]Verification command set:[/green] {config.verification_command}")
+
+
+def import_rules(
+    files: list[str] = typer.Argument(..., metavar="FILE...", help="Rule file paths to import."),
+):
+    """Import hard constraints and behavioral guidelines from markdown rule files."""
+    repo_root = require_repo_root()
+
+    targets = [Path(item) for item in files]
+    trust_db = open_trust_db(repo_root)
+    total_imported = 0
+    total_guidelines = 0
+    for target in targets:
+        path = target if target.is_absolute() else (repo_root / target)
+        if not path.exists():
+            print(f"[yellow]Skipping missing file:[/yellow] {path}")
+            continue
+        try:
+            parsed = parse_constraints_file(path)
+        except Exception as exc:
+            print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1)
+        imported = trust_db.replace_constraints(
+            str(repo_root),
+            source=path.name,
+            constraints=parsed.constraints,
+        )
+        guideline_count = trust_db.replace_behavioral_guidelines(
+            str(repo_root),
+            source=path.name,
+            guidelines=parsed.behavioral_guidelines,
+        )
+        total_imported += imported
+        total_guidelines += guideline_count
+        print(f"[green]Imported {imported} constraints from {path.name}.[/green]")
+        print(f"[green]Imported {guideline_count} behavioral guidelines from {path.name}.[/green]")
+        if parsed.unresolved_lines:
+            print(f"[yellow]{len(parsed.unresolved_lines)} lines were ambiguous and handled conservatively.[/yellow]")
+
+    print(f"[bold]Total constraints imported:[/bold] {total_imported}")
+    print(f"[bold]Total behavioral guidelines imported:[/bold] {total_guidelines}")
+
+
+def constraints(
+    json_out: bool = typer.Option(False, "--json", help="Output constraints as JSON."),
+):
+    """List hard constraints imported from rule files."""
+    repo_root = require_repo_root()
+
+    trust_db = open_trust_db(repo_root)
+    constraints_list = trust_db.list_constraints(str(repo_root))
+    if not constraints_list:
+        print("[yellow]No hard constraints found.[/yellow]")
+        return
+
+    if json_out:
+        payload = [
+            {
+                "path_pattern": item.path_pattern,
+                "constraint_type": item.constraint_type,
+                "source": item.source,
+                "overridable": item.overridable,
+            }
+            for item in constraints_list
+        ]
+        print(json.dumps(payload, indent=2))
+        return
+
+    table = Table(title="Hard Constraints")
+    table.add_column("Pattern")
+    table.add_column("Type")
+    table.add_column("Source")
+    table.add_column("Overridable")
+    for item in constraints_list:
+        table.add_row(
+            item.path_pattern,
+            item.constraint_type,
+            item.source,
+            "yes" if item.overridable else "no",
+        )
+    print(table)
+
+
+def guidelines(
+    json_out: bool = typer.Option(False, "--json", help="Output behavioral guidelines as JSON."),
+):
+    """List behavioral guidelines imported from rule files."""
+    repo_root = require_repo_root()
+
+    trust_db = open_trust_db(repo_root)
+    rows = trust_db.list_behavioral_guidelines(str(repo_root))
+    if not rows:
+        print("[yellow]No behavioral guidelines found.[/yellow]")
+        return
+
+    if json_out:
+        payload = [{"guideline": item.guideline, "source": item.source} for item in rows]
+        print(json.dumps(payload, indent=2))
+        return
+
+    table = Table(title="Behavioral Guidelines")
+    table.add_column("Guideline")
+    table.add_column("Source")
+    for item in rows:
+        table.add_row(item.guideline, item.source)
+    print(table)
+
+
+def guidelines_suggest(
+    min_count: int = typer.Option(2, "--min-count", help="Minimum repeated feedback count."),
+    apply: bool = typer.Option(False, "--apply", help="Add selected suggestions to guidelines."),
+    all: bool = typer.Option(False, "--all", help="Apply all suggestions (use with --apply)."),
+    json_out: bool = typer.Option(False, "--json", help="Output suggestions as JSON."),
+):
+    """Suggest behavioral guidelines from repeated developer feedback."""
+    repo_root = require_repo_root()
+
+    repo_root_str = str(repo_root)
+    trust_db = open_trust_db(repo_root)
+    candidates = trust_db.guideline_candidates(repo_root_str, min_count=min_count)
+    if not candidates:
+        print("[yellow]No repeated feedback patterns found yet.[/yellow]")
+        return
+
+    if json_out:
+        payload = [
+            {"guideline": item.guideline, "count": item.count}
+            for item in candidates
+        ]
+        print(json.dumps(payload, indent=2))
+    else:
+        table = Table(title="Guideline Suggestions")
+        table.add_column("#")
+        table.add_column("Count")
+        table.add_column("Suggested Guideline")
+        for idx, item in enumerate(candidates, 1):
+            table.add_row(str(idx), str(item.count), item.guideline)
+        print(table)
+
+    if not apply:
+        print("Use `--apply` to add suggestions as behavioral guidelines.")
+        return
+
+    selected: list[str]
+    if all:
+        selected = [item.guideline for item in candidates]
+    else:
+        choices = ",".join(str(i) for i in range(1, len(candidates) + 1))
+        raw = Prompt.ask(
+            f"Select suggestion numbers to apply (comma-separated from {choices})",
+            default="1",
+        )
+        indices: list[int] = []
+        for token in raw.split(","):
+            token = token.strip()
+            if not token.isdigit():
+                continue
+            value = int(token)
+            if 1 <= value <= len(candidates):
+                indices.append(value)
+        indices = sorted(set(indices))
+        if not indices:
+            print("[yellow]No valid suggestions selected.[/yellow]")
+            return
+        selected = [candidates[i - 1].guideline for i in indices]
+
+    inserted = trust_db.add_behavioral_guidelines(
+        repo_root_str,
+        source="feedback_auto",
+        guidelines=selected,
+    )
+    print(f"[green]Added {inserted} behavioral guideline(s).[/green]")
+
+
+def guidelines_clear(
+    all: bool = typer.Option(False, "--all", help="Delete all behavioral guidelines for this repo."),
+    source: str | None = typer.Option(None, "--source", help="Delete only behavioral guidelines from this source."),
+):
+    """Delete behavioral guidelines from the trust database."""
+    if not all and source is None:
+        print("[red]Specify --all or --source.[/red]")
+        raise typer.Exit(code=1)
+
+    repo_root = require_repo_root()
+    trust_db = open_trust_db(repo_root)
+    removed = trust_db.delete_behavioral_guidelines(
+        str(repo_root),
+        source=None if all else source,
+    )
+    print(f"[green]Removed {removed} behavioral guidelines.[/green]")
+
+
+def constraints_clear(
+    all: bool = typer.Option(False, "--all", help="Delete all hard constraints for this repo."),
+    source: str | None = typer.Option(None, "--source", help="Delete only constraints from this source file."),
+    pattern: str | None = typer.Option(None, "--pattern", help="Delete only this exact path pattern."),
+):
+    """Delete hard constraints from the trust database."""
+    if not all and source is None and pattern is None:
+        print("[red]Specify --all or at least one filter (--source / --pattern).[/red]")
+        raise typer.Exit(code=1)
+
+    repo_root = require_repo_root()
+    trust_db = open_trust_db(repo_root)
+    removed = trust_db.delete_constraints(
+        str(repo_root),
+        source=None if all else source,
+        path_pattern=None if all else pattern,
+    )
+    print(f"[green]Removed {removed} hard constraints.[/green]")
