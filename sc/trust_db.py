@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-### This is an AI-Generate file based off the DB schema I designed
+### This is mostly an AI-Generate file based off the DB schema I designed
 
 # central persistence layer for governance state.
 # stores leases, decision traces, constraints, guidelines, and calibration data.

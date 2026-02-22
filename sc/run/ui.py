@@ -100,9 +100,13 @@ def _prompt_permanent(files: list[str]) -> bool:
 
 
 def _confirm_read_missing(missing_files: list[str]) -> bool:
-    print("\n[bold yellow]Read request includes missing files[/bold yellow]")
+    print("\n[bold yellow]Files don't exist yet[/bold yellow]")
     _render_file_list(missing_files)
-    response = Prompt.ask("Continue anyway? (a)pprove/(d)eny", choices=["a", "d"], default="d")
+    response = Prompt.ask(
+        "Files don't exist yet; proceed with create workflow? (a)pprove/(d)eny",
+        choices=["a", "d"],
+        default="d",
+    )
     return response == "a"
 
 
