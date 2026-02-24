@@ -113,13 +113,19 @@ class ClaudeClient:
         )
         session.add_user(
             "Return JSON only.\n"
-            "Extract durable autonomy preferences. Do not include prose.\n"
+            "Extract autonomy preferences from developer feedback. Do not include prose.\n"
             "Schema:\n"
             f"{schema_json}\n\n"
             "Rules:\n"
             "- Use only listed check-in topics.\n"
-            "- Use only compact pattern tags.\n"
-            "- If uncertain, prefer false / empty arrays.\n\n"
+            "- If the feedback expresses frustration with check-ins or a desire for less "
+            "interruption, set prefer_fewer_checkins to true.\n"
+            "- Only use false / empty arrays when the feedback is clearly unrelated to "
+            "autonomy preferences.\n\n"
+            "Examples:\n"
+            'Feedback: "just do it" -> {"prefer_fewer_checkins":true,...}\n'
+            'Feedback: "stop asking me about formatting" -> {"prefer_fewer_checkins":true,...}\n'
+            'Feedback: "use tabs instead of spaces" -> {"prefer_fewer_checkins":false,...}\n\n'
             f"Feedback: {text}"
         )
         raw = self._call(session, max_tokens=220, temperature=0.0)

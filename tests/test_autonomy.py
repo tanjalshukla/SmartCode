@@ -83,6 +83,24 @@ class AutonomyPreferenceTests(unittest.TestCase):
         self.assertEqual(proceed_overlap, 0.9)
         self.assertEqual(flag_overlap, 0.2)
 
+    def test_casual_feedback_triggers_prefer_fewer(self) -> None:
+        casual_phrases = [
+            "just do it",
+            "stop asking me",
+            "go ahead",
+            "you decide",
+            "I don't care",
+            "do whatever",
+            "leave me alone",
+        ]
+        for phrase in casual_phrases:
+            updated, learned = update_preferences_from_feedback(AutonomyPreferences(), phrase)
+            self.assertTrue(updated.prefer_fewer_checkins, f"Failed for: {phrase!r}")
+
+    def test_unrelated_feedback_does_not_trigger_prefer_fewer(self) -> None:
+        updated, _ = update_preferences_from_feedback(AutonomyPreferences(), "use tabs instead of spaces")
+        self.assertFalse(updated.prefer_fewer_checkins)
+
     def test_adjusted_thresholds_never_go_below_floor(self) -> None:
         prefs = AutonomyPreferences(prefer_fewer_checkins=True)
         proceed, flag = adjusted_policy_thresholds(-5.0, -5.0, prefs)

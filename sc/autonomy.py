@@ -26,8 +26,19 @@ _PREFER_AUTONOMY_PATTERNS = (
     re.compile(r"\blow[- ]risk\b.*\bautonom\w*\b"),
     re.compile(r"\bauto-?approve\b"),
     re.compile(r"\bskip check-?ins?\b"),
-    re.compile(r"\bdon['’]t ask about\b"),
+    re.compile(r"\bdon['']t ask about\b"),
     re.compile(r"\btrust me\b"),
+    re.compile(r"\bjust do it\b"),
+    re.compile(r"\bjust go ahead\b"),
+    re.compile(r"\bgo ahead\b"),
+    re.compile(r"\bstop asking\b"),
+    re.compile(r"\bstop checking in\b"),
+    re.compile(r"\bdo(?:n't| not) bother\b"),
+    re.compile(r"\byou decide\b"),
+    re.compile(r"\byour call\b"),
+    re.compile(r"\bdo whatever\b"),
+    re.compile(r"\bi don'?t care\b"),
+    re.compile(r"\bleave me alone\b"),
 )
 
 _ONLY_CHECKIN_FOR_PATTERN = re.compile(r"only\s+check-?\s*in\s+for\s+([^.!?;]+)")
