@@ -55,6 +55,32 @@ class TrustDBGuidelineTests(unittest.TestCase):
             )
             self.assertEqual(inserted_again, 0)
 
+    def test_guideline_candidates_ignore_non_corrective_feedback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = TrustDB(Path(tmpdir) / "trust.db")
+            repo = "/tmp/repo"
+            db.record_trace(
+                repo_root=repo,
+                session_id="s1",
+                task="task",
+                stage="planning",
+                action_type="check_in",
+                file_path="__session__",
+                change_type="decision_point",
+                diff_size=None,
+                blast_radius=None,
+                existing_lease=False,
+                lease_type=None,
+                prior_approvals=0,
+                prior_denials=0,
+                policy_action="check_in",
+                policy_score=0.0,
+                user_decision="approve",
+                user_feedback_text="Use option 2 with float return type.",
+            )
+            candidates = db.guideline_candidates(repo, min_count=1)
+            self.assertEqual(candidates, [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,16 +3,21 @@ from __future__ import annotations
 """Apply-stage policy decisions and write/verification execution for `sc run`."""
 
 import hashlib
+import os
+import tempfile
 import time
 from pathlib import Path
 
 import typer
 from rich import print
 
+from ..agent_client import ClaudeClient
+from ..autonomy import adjusted_policy_thresholds
 from ..config import SAConfig
 from ..features import classify_change_pattern, estimate_blast_radius, is_security_sensitive
 from ..policy import PolicyDecision, within_scope_budget
 from .helpers import (
+    _apply_feedback_learning,
     _collect_change_metrics,
     _constraint_index,
     _normalize_new_content,
@@ -47,6 +52,7 @@ def _evaluate_apply_stage(
     planned_files: list[str],
     remember: bool,
     threshold: int,
+    client: ClaudeClient | None = None,
 ) -> None:
     """Resolve apply policy + approval flow and persist decision traces."""
 
@@ -65,6 +71,8 @@ def _evaluate_apply_stage(
         stage="apply",
         window_seconds=config.policy_recent_denials_window_sec,
     )
+    autonomy_preferences = trust_db.autonomy_preferences(repo_root_str)
+    model_checkin_total, model_checkin_rate = trust_db.model_checkin_calibration(repo_root_str)
 
     prompt_required = False
     flagged_auto_files: list[str] = []
@@ -125,6 +133,23 @@ def _evaluate_apply_stage(
             continue
 
         if config.adaptive_policy_enabled:
+            proceed_threshold, flag_threshold = adjusted_policy_thresholds(
+                config.policy_proceed_threshold,
+                config.policy_flag_threshold,
+                autonomy_preferences,
+                file_path=path,
+                model_checkin_approval_rate=model_checkin_rate,
+                model_checkin_total=model_checkin_total,
+            )
+            verification_failure_rate = trust_db.verification_failure_rate(
+                repo_root_str,
+                path,
+                stage="apply",
+            )
+            confidence_stats = trust_db.model_confidence_stats(
+                repo_root_str,
+                file_path=path,
+            )
             decision = _policy_decision_for_file(
                 history=history,
                 diff_size=diff_size,
@@ -133,8 +158,12 @@ def _evaluate_apply_stage(
                 is_security_sensitive=security_sensitive,
                 change_pattern=change_pattern,
                 recent_denials=recent_apply_denials,
-                proceed_threshold=config.policy_proceed_threshold,
-                flag_threshold=config.policy_flag_threshold,
+                files_in_action=len(touched_files),
+                verification_failure_rate=verification_failure_rate,
+                model_confidence_avg=confidence_stats.average,
+                model_confidence_samples=confidence_stats.samples,
+                proceed_threshold=proceed_threshold,
+                flag_threshold=flag_threshold,
             )
         else:
             decision = PolicyDecision(
@@ -231,8 +260,14 @@ def _evaluate_apply_stage(
             response_time_ms=response_time_ms,
             feedback_text=apply_feedback,
         )
-        if apply_feedback:
-            session.add_memory_note(f"Write decision guidance: {apply_feedback}")
+        _apply_feedback_learning(
+            trust_db=trust_db,
+            repo_root=repo_root_str,
+            session=session,
+            feedback_text=apply_feedback,
+            client=client,
+            guidance_prefix="Write decision guidance",
+        )
         if not approved:
             print("[yellow]Patch denied.[/yellow]")
             raise typer.Exit(code=0)
@@ -332,17 +367,7 @@ def _apply_updates_and_verify(
             print(f"[red]File changed since model response: {path}[/red]")
             raise typer.Exit(code=1)
 
-    for path, content in updates.items():
-        if path not in touched_files:
-            continue
-        file_path = repo_root / path
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            current = file_path.read_text()
-        except Exception:
-            current = ""
-        normalized = _normalize_new_content(current, content)
-        file_path.write_text(normalized)
+    _write_updates_atomically(repo_root=repo_root, updates=updates, touched_files=touched_files)
 
     if config.verification_enabled:
         verification_result = run_verification(
@@ -368,3 +393,50 @@ def _apply_updates_and_verify(
                 if check.passed:
                     continue
                 print(f"  - {check.name}: {check.output}")
+
+
+def _write_updates_atomically(
+    *,
+    repo_root: Path,
+    updates: dict[str, str],
+    touched_files: list[str],
+) -> None:
+    temp_paths: dict[str, Path] = {}
+    try:
+        for path in touched_files:
+            content = updates.get(path)
+            if content is None:
+                continue
+            file_path = repo_root / path
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                current = file_path.read_text()
+            except Exception:
+                current = ""
+            normalized = _normalize_new_content(current, content)
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=file_path.parent,
+                prefix=f".{file_path.name}.sc_tmp_",
+                delete=False,
+            ) as handle:
+                handle.write(normalized)
+                temp_paths[path] = Path(handle.name)
+
+        for path in touched_files:
+            temp_path = temp_paths.get(path)
+            if temp_path is None:
+                continue
+            target_path = repo_root / path
+            os.replace(temp_path, target_path)
+            temp_paths.pop(path, None)
+    except OSError as exc:
+        print(f"[red]Failed to write file updates atomically: {exc}[/red]")
+        raise typer.Exit(code=1)
+    finally:
+        for temp_path in temp_paths.values():
+            try:
+                temp_path.unlink(missing_ok=True)
+            except Exception:
+                pass

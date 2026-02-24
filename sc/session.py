@@ -42,4 +42,9 @@ class ClaudeSession:
     def _trim_messages(self) -> None:
         if self.max_messages <= 0 or len(self.messages) <= self.max_messages:
             return
+        if self.max_messages >= 2 and len(self.messages) > 1:
+            first = self.messages[0]
+            remaining_budget = self.max_messages - 1
+            self.messages = [first] + self.messages[-remaining_budget:]
+            return
         self.messages = self.messages[-self.max_messages :]

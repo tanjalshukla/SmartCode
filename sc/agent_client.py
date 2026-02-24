@@ -46,9 +46,17 @@ CHECKIN_SCHEMA = {
     "reason": "string",
     "check_in_type": "plan_review|decision_point|progress_update|deviation_notice|phase_transition|uncertainty",
     "content": "string",
+    "recommendation": "string|null",
     "options": ["string"],
     "assumptions": ["string"],
     "confidence": "number|null (0.0-1.0)",
+}
+
+AUTONOMY_FEEDBACK_SCHEMA = {
+    "prefer_fewer_checkins": "boolean",
+    "allowed_checkin_topics": ["api", "signature", "schema", "security", "architecture", "config", "test", "deployment"],
+    "skip_low_risk_plan_checkpoint": "boolean",
+    "scoped_paths": ["demo/checkin/*"],
 }
 
 
@@ -94,6 +102,34 @@ class ClaudeClient:
             messages=session.messages,
         )
         return self._response_text(response)
+
+    def summarize_autonomy_feedback(self, feedback_text: str) -> dict[str, object] | None:
+        text = " ".join(feedback_text.split()).strip()
+        if not text:
+            return None
+        schema_json = json.dumps(AUTONOMY_FEEDBACK_SCHEMA, indent=2)
+        session = ClaudeSession(
+            "You extract autonomy preferences from developer feedback. Return JSON only."
+        )
+        session.add_user(
+            "Return JSON only.\n"
+            "Extract durable autonomy preferences. Do not include prose.\n"
+            "Schema:\n"
+            f"{schema_json}\n\n"
+            "Rules:\n"
+            "- Use only listed check-in topics.\n"
+            "- Use only compact pattern tags.\n"
+            "- If uncertain, prefer false / empty arrays.\n\n"
+            f"Feedback: {text}"
+        )
+        raw = self._call(session, max_tokens=220, temperature=0.0)
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        return payload
 
     def declare_intent(
         self,

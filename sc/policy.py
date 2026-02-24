@@ -24,6 +24,10 @@ class PolicyInput:
     is_security_sensitive: bool
     change_pattern: str | None
     recent_denials: int
+    files_in_action: int
+    verification_failure_rate: float | None = None
+    model_confidence_avg: float | None = None
+    model_confidence_samples: int = 0
 
 
 @dataclass(frozen=True)
@@ -75,6 +79,13 @@ def decide_action(
         score -= 0.8
         reasons.append("-risk:multi-file blast radius")
 
+    if policy_input.files_in_action > 4:
+        score -= 0.9
+        reasons.append("-risk:large multi-file action")
+    elif policy_input.files_in_action > 1:
+        score -= 0.35
+        reasons.append("-risk:multi-file action")
+
     if policy_input.is_new_file:
         score -= 0.6
         reasons.append("-risk:new file")
@@ -83,18 +94,45 @@ def decide_action(
         score -= 2.0
         reasons.append("-risk:security sensitive")
 
-    # interface-level changes are harder to reverse
+    # full pattern scoring for semantic risk calibration.
     if policy_input.change_pattern in {"api_change", "data_model_change"}:
         score -= 0.8
         reasons.append("-risk:interface change")
     elif policy_input.change_pattern in {"test_generation", "documentation"}:
         score += 0.3
         reasons.append("+risk:low impact change")
+    elif policy_input.change_pattern == "config_change":
+        score -= 0.4
+        reasons.append("-risk:config change")
+    elif policy_input.change_pattern == "dependency_update":
+        score -= 0.5
+        reasons.append("-risk:dependency update")
+    elif policy_input.change_pattern == "error_handling":
+        score += 0.1
+        reasons.append("+risk:error handling is usually localized")
 
     # --- session momentum ---
     if policy_input.recent_denials:
         score -= min(policy_input.recent_denials, 3) * 0.7
         reasons.append("-session:recent denials")
+
+    # --- trace-derived quality signals ---
+    if policy_input.verification_failure_rate is not None and policy_input.verification_failure_rate > 0.30:
+        score -= 0.6
+        reasons.append(
+            f"-quality:verification failure rate {policy_input.verification_failure_rate:.0%}"
+        )
+
+    if (
+        policy_input.model_confidence_avg is not None
+        and policy_input.model_confidence_samples >= 3
+        and policy_input.model_confidence_avg < 0.40
+    ):
+        score -= 0.3
+        reasons.append(
+            f"-quality:low model confidence {policy_input.model_confidence_avg:.2f} "
+            f"({policy_input.model_confidence_samples} samples)"
+        )
 
     # --- threshold comparison ---
     if score >= proceed_threshold:

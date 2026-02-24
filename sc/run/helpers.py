@@ -7,6 +7,10 @@ import hashlib
 import json
 from pathlib import Path
 
+from rich import print
+
+from ..agent_client import ClaudeClient
+from ..autonomy import preferences_from_model_payload
 from ..cli_shared import (
     read_file_context as _read_file_context,
     resolve_config as _resolve_config,
@@ -81,6 +85,10 @@ def _policy_decision_for_file(
     is_security_sensitive: bool,
     change_pattern: str | None,
     recent_denials: int,
+    files_in_action: int,
+    verification_failure_rate: float | None = None,
+    model_confidence_avg: float | None = None,
+    model_confidence_samples: int = 0,
     proceed_threshold: float,
     flag_threshold: float,
 ) -> PolicyDecision:
@@ -96,6 +104,10 @@ def _policy_decision_for_file(
             is_security_sensitive=is_security_sensitive,
             change_pattern=change_pattern,
             recent_denials=recent_denials,
+            files_in_action=files_in_action,
+            verification_failure_rate=verification_failure_rate,
+            model_confidence_avg=model_confidence_avg,
+            model_confidence_samples=model_confidence_samples,
         ),
         proceed_threshold=proceed_threshold,
         flag_threshold=flag_threshold,
@@ -175,3 +187,49 @@ def _auto_read_user_decision(
     if read_leases[path] is not None:
         return "auto_approve_read_lease"
     return "auto_approve_flag" if read_policies[path].action == "proceed_flag" else "auto_approve"
+
+
+def _learn_preferences_from_feedback(
+    *,
+    trust_db: TrustDB,
+    repo_root: str,
+    feedback_text: str,
+    client: ClaudeClient | None = None,
+) -> list[str]:
+    """Learn autonomy preferences from feedback with model fallback for ambiguous text."""
+    before = trust_db.autonomy_preferences(repo_root)
+    learned = trust_db.learn_autonomy_preferences(repo_root, feedback_text)
+    after = trust_db.autonomy_preferences(repo_root)
+    if learned or after != before or client is None:
+        return learned
+    model_payload = client.summarize_autonomy_feedback(feedback_text)
+    if not model_payload:
+        return []
+    inferred = preferences_from_model_payload(model_payload)
+    return trust_db.merge_autonomy_preferences(repo_root, inferred)
+
+
+def _apply_feedback_learning(
+    *,
+    trust_db: TrustDB,
+    repo_root: str,
+    session: ClaudeSession,
+    feedback_text: str | None,
+    client: ClaudeClient | None = None,
+    guidance_prefix: str | None = None,
+) -> list[str]:
+    """Learn preferences from free-text feedback and persist memory notes."""
+    if not feedback_text:
+        return []
+    learned = _learn_preferences_from_feedback(
+        trust_db=trust_db,
+        repo_root=repo_root,
+        feedback_text=feedback_text,
+        client=client,
+    )
+    for item in learned:
+        print(f"[green]Learned preference:[/green] {item}")
+        session.add_memory_note(f"Learned autonomy preference: {item}")
+    if guidance_prefix:
+        session.add_memory_note(f"{guidance_prefix}: {feedback_text}")
+    return learned

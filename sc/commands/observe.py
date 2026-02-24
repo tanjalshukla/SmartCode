@@ -271,6 +271,56 @@ def checkin_stats(
     print(table)
 
 
+def preferences(
+    json_out: bool = typer.Option(False, "--json", help="Output learned autonomy preferences as JSON."),
+):
+    """Show currently learned autonomy preferences."""
+    repo_root = require_repo_root()
+    trust_db = open_trust_db(repo_root)
+    prefs = trust_db.autonomy_preferences(str(repo_root))
+    payload = {
+        "prefer_fewer_checkins": prefs.prefer_fewer_checkins,
+        "allowed_checkin_topics": list(prefs.allowed_checkin_topics),
+        "skip_low_risk_plan_checkpoint": prefs.skip_low_risk_plan_checkpoint,
+        "scoped_paths": list(prefs.scoped_paths),
+    }
+
+    if json_out:
+        print(json.dumps(payload, indent=2))
+        return
+
+    table = Table(title="Autonomy Preferences")
+    table.add_column("Field")
+    table.add_column("Value")
+    table.add_row("Prefer fewer check-ins", "yes" if prefs.prefer_fewer_checkins else "no")
+    table.add_row(
+        "Allowed check-in topics",
+        ", ".join(prefs.allowed_checkin_topics) if prefs.allowed_checkin_topics else "-",
+    )
+    table.add_row(
+        "Skip low-risk plan checkpoints",
+        "yes" if prefs.skip_low_risk_plan_checkpoint else "no",
+    )
+    table.add_row("Scoped paths", ", ".join(prefs.scoped_paths) if prefs.scoped_paths else "-")
+    print(table)
+
+
+def preferences_clear(
+    yes: bool = typer.Option(False, "--yes", help="Confirm deleting learned autonomy preferences."),
+):
+    """Delete learned autonomy preferences for this repo."""
+    if not yes:
+        print("[red]Refusing to clear preferences without --yes.[/red]")
+        raise typer.Exit(code=1)
+    repo_root = require_repo_root()
+    trust_db = open_trust_db(repo_root)
+    removed = trust_db.delete_autonomy_preferences(str(repo_root))
+    if removed:
+        print("[green]Cleared learned autonomy preferences.[/green]")
+    else:
+        print("[yellow]No learned autonomy preferences found.[/yellow]")
+
+
 def report(
     json_out: bool = typer.Option(False, "--json", help="Output report as JSON."),
 ):

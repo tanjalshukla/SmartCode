@@ -27,6 +27,8 @@ def build_run_system_prompt(
     guidelines = trust_db.list_behavioral_guidelines(repo_root)
     feedback_snippets = trust_db.recent_feedback_snippets(repo_root, limit=4)
     calibration = trust_db.checkin_calibration(repo_root)
+    autonomy_preferences = trust_db.autonomy_preferences(repo_root)
+    access_stats = trust_db.access_stats(repo_root, limit=200)
 
     constraint_lines = [
         f"{item.constraint_type}: {item.path_pattern} (source: {item.source})"
@@ -34,6 +36,14 @@ def build_run_system_prompt(
     ]
     guideline_lines = [item.guideline for item in guidelines]
     feedback_lines = [f"Developer said: {text}" for text in feedback_snippets]
+    autonomy_lines = autonomy_preferences.prompt_lines()
+    access_lines: list[str] = [
+        f"Recent read actions: {access_stats.read_actions}",
+        f"Recent write actions: {access_stats.write_actions}",
+        f"Recent multi-file writes: {access_stats.multi_file_write_actions}",
+    ]
+    if access_stats.avg_files_per_write is not None:
+        access_lines.append(f"Average files per write action: {access_stats.avg_files_per_write:.2f}")
 
     # calibration signal tells the model whether its past check-ins were useful
     model_rows = [row for row in calibration if row.initiator == "model_proactive"]
@@ -87,7 +97,8 @@ def build_run_system_prompt(
         "4) Every check-in must include: architectural concern, at least two options when applicable,\n"
         "   explicit tradeoffs, and a recommendation.\n"
         "5) Include assumptions (list of key assumptions) and confidence (0.0-1.0) in every check_in.\n"
-        "6) For file updates, output only the JSON file-update payload requested by the user prompt.\n\n"
+        "6) Keep check-in content to 2-3 sentences. Each option should be one concise line with the tradeoff.\n"
+        "7) For file updates, output only the JSON file-update payload requested by the user prompt.\n\n"
         "Check-in quality bar:\n"
         "- Ask only when the decision is expensive to reverse (architecture, interfaces, workflows).\n"
         "- Do not ask about routine implementation details or formatting choices.\n"
@@ -103,6 +114,10 @@ def build_run_system_prompt(
         f"{_bullet_lines(trust_summary.corrected_patterns, 'No correction pattern history yet.')}\n"
         "Recent qualitative guidance:\n"
         f"{_bullet_lines(feedback_lines, 'No direct feedback captured yet.')}\n\n"
+        "Developer autonomy preferences:\n"
+        f"{_bullet_lines(autonomy_lines, 'No explicit autonomy preference learned yet.')}\n\n"
+        "Observed access statistics:\n"
+        f"{_bullet_lines(access_lines, 'No access history yet.')}\n\n"
         "Hard constraints (must honor):\n"
         f"{_bullet_lines(constraint_lines, 'No hard constraints loaded.')}\n\n"
         "Behavioral guidelines (preferred style):\n"

@@ -50,7 +50,7 @@ def evaluate_checkin_quality(message: CheckInMessage) -> CheckInQualityResult:
 
     if len(reason) < 20:
         issues.append("reason is too short")
-    if len(content) < 120:
+    if len(content) < 60:
         issues.append("content is too short to explain tradeoffs")
     if message.check_in_type in _OPTIONS_REQUIRED and len(options) < 2:
         issues.append("at least two options are required for this check-in type")
@@ -77,7 +77,7 @@ def build_checkin_repair_prompt(result: CheckInQualityResult) -> str:
         "- reason: concrete architectural risk or ambiguity\n"
         "- content: options, tradeoffs (pros/cons), and downstream impact\n"
         "- options: at least two concrete approaches when applicable\n"
-        "- recommendation: your preferred option and why\n"
+        "- include your recommendation inside the content field (e.g. 'I recommend ...')\n"
         "- assumptions: list of key assumptions you are making\n"
         "- confidence: number in [0.0, 1.0]\n"
         "Do not return markdown."

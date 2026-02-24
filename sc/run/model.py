@@ -17,7 +17,7 @@ from ..schema import CheckInMessage, IntentDeclaration, WorkflowPhase
 from ..session import ClaudeSession
 from ..session_feedback import SessionFeedback
 from ..trust_db import TrustDB
-from .helpers import _build_patch_from_updates
+from .helpers import _apply_feedback_learning, _build_patch_from_updates
 from .ui import _show_system_prompt
 
 
@@ -90,16 +90,17 @@ def _handle_model_checkin(
     repo_root_str: str,
     session: ClaudeSession,
     feedback: SessionFeedback,
+    client: ClaudeClient | None = None,
 ) -> tuple[bool, str, str | None]:
     print(f"\n[bold]Model check-in ({stage})[/bold]")
     print(f"Type: {check_in.check_in_type}")
     print(f"Reason: {check_in.reason}")
-    if check_in.confidence is not None:
-        print(f"Model confidence: {check_in.confidence:.2f}")
     if check_in.assumptions:
         print("Model assumptions:")
         for item in check_in.assumptions:
             print(f"  - {item}")
+    if check_in.recommendation:
+        print(f"Recommendation: {check_in.recommendation}")
     print(check_in.content)
 
     response_text = ""
@@ -130,7 +131,14 @@ def _handle_model_checkin(
         response_text if approved and response_text != "Proceed with current approach." else None
     )
     if captured_feedback:
-        session.add_memory_note(f"Developer guidance: {captured_feedback}")
+        _apply_feedback_learning(
+            trust_db=trust_db,
+            repo_root=repo_root_str,
+            session=session,
+            feedback_text=captured_feedback,
+            client=client,
+            guidance_prefix="Developer guidance",
+        )
 
     response_time_ms = int((time.time() - prompt_started) * 1000)
     trust_db.record_decision(
@@ -200,7 +208,7 @@ def _generate_updates_with_repair(
     current_phase: WorkflowPhase,
     show_system_prompt: bool,
     feedback: SessionFeedback,
-) -> tuple[dict[str, str], str, list[str], WorkflowPhase]:
+) -> tuple[dict[str, str], str, list[str]]:
     update_error: str | None = None
     max_update_attempts = 3
     max_model_checkins = 5
@@ -209,6 +217,11 @@ def _generate_updates_with_repair(
 
     while update_attempt < max_update_attempts:
         try:
+            session.system_prompt = build_run_system_prompt(
+                trust_db=trust_db,
+                repo_root=repo_root_str,
+                workflow_phase=current_phase,
+            )
             _refresh_session_context(session, feedback)
             print("[cyan]Calling model for file updates...[/cyan]")
             updates = client.generate_updates(
@@ -233,6 +246,7 @@ def _generate_updates_with_repair(
                 repo_root_str=repo_root_str,
                 session=session,
                 feedback=feedback,
+                client=client,
             )
             if not approved:
                 print("[yellow]Task denied during model check-in.[/yellow]")
@@ -279,6 +293,6 @@ def _generate_updates_with_repair(
             )
             update_attempt += 1
             continue
-        return updates, patch_text, touched_files, current_phase
+        return updates, patch_text, touched_files
 
     raise RuntimeError(update_error or "Failed to obtain valid file updates.")

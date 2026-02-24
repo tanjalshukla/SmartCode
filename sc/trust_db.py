@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-### This is mostly an AI-Generate file based off the DB schema I designed
-
-### TODO: modularize code in this file, clean up boilerplate
-
 # central persistence layer for governance state.
 # stores leases, decision traces, constraints, guidelines, and calibration data.
 # schema migrations are additive (new columns only) to avoid breaking existing dbs.
@@ -16,6 +12,12 @@ from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Iterator, Iterable
+
+from .autonomy import (
+    AutonomyPreferences,
+    merge_preferences,
+    update_preferences_from_feedback,
+)
 
 
 # --- data classes returned by query methods ---
@@ -98,6 +100,20 @@ class GuidelineCandidate:
     count: int
 
 
+@dataclass(frozen=True)
+class AccessStats:
+    read_actions: int
+    write_actions: int
+    avg_files_per_write: float | None
+    multi_file_write_actions: int
+
+
+@dataclass(frozen=True)
+class ModelConfidenceStats:
+    average: float | None
+    samples: int
+
+
 class TrustDB:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -131,6 +147,7 @@ class TrustDB:
                 )
                 """
             )
+            self._dedupe_lease_rows(conn, table="leases")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS read_leases (
@@ -143,6 +160,7 @@ class TrustDB:
                 )
                 """
             )
+            self._dedupe_lease_rows(conn, table="read_leases")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS decisions (
@@ -236,13 +254,25 @@ class TrustDB:
                 """
             )
             conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_leases_repo_file ON leases (repo_root, file_path)"
+                """
+                CREATE TABLE IF NOT EXISTS autonomy_preferences (
+                    id INTEGER PRIMARY KEY,
+                    repo_root TEXT NOT NULL UNIQUE,
+                    preferences_json TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
+                )
+                """
+            )
+            conn.execute("DROP INDEX IF EXISTS idx_leases_repo_file")
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_leases_repo_file ON leases (repo_root, file_path)"
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_leases_expires ON leases (expires_at)"
             )
+            conn.execute("DROP INDEX IF EXISTS idx_read_leases_repo_file")
             conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_read_leases_repo_file ON read_leases (repo_root, file_path)"
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_read_leases_repo_file ON read_leases (repo_root, file_path)"
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_read_leases_expires ON read_leases (expires_at)"
@@ -287,12 +317,73 @@ class TrustDB:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_guidelines_repo_source ON behavioral_guidelines (repo_root, source)"
             )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_autonomy_prefs_repo ON autonomy_preferences (repo_root)"
+            )
 
     def _ensure_column(self, conn: sqlite3.Connection, *, table: str, column: str, definition: str) -> None:
         columns = conn.execute(f"PRAGMA table_info({table})").fetchall()
         if any(row["name"] == column for row in columns):
             return
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+    def _dedupe_lease_rows(self, conn: sqlite3.Connection, *, table: str) -> None:
+        duplicate_keys = conn.execute(
+            f"""
+            SELECT repo_root, file_path
+            FROM {table}
+            GROUP BY repo_root, file_path
+            HAVING COUNT(*) > 1
+            """
+        ).fetchall()
+        for key in duplicate_keys:
+            repo_root = str(key["repo_root"])
+            file_path = str(key["file_path"])
+            rows = conn.execute(
+                f"""
+                SELECT id, created_at, expires_at
+                FROM {table}
+                WHERE repo_root = ? AND file_path = ?
+                """,
+                (repo_root, file_path),
+            ).fetchall()
+            if len(rows) < 2:
+                continue
+            keep = max(
+                rows,
+                key=lambda row: (
+                    row["expires_at"] is None,
+                    int(row["expires_at"] or 0),
+                    int(row["created_at"]),
+                    int(row["id"]),
+                ),
+            )
+            conn.execute(
+                f"""
+                DELETE FROM {table}
+                WHERE repo_root = ? AND file_path = ? AND id <> ?
+                """,
+                (repo_root, file_path, int(keep["id"])),
+            )
+
+    def _best_lease_map(self, rows: Iterable[sqlite3.Row], lease_type: str) -> dict[str, Lease]:
+        best: dict[str, Lease] = {}
+        for row in rows:
+            file_path = str(row["file_path"])
+            expires_at = row["expires_at"]
+            candidate = Lease(file_path, expires_at, lease_type)
+            existing = best.get(file_path)
+            if existing is None:
+                best[file_path] = candidate
+                continue
+            if existing.expires_at is None:
+                continue
+            if candidate.expires_at is None:
+                best[file_path] = candidate
+                continue
+            if int(candidate.expires_at) > int(existing.expires_at):
+                best[file_path] = candidate
+        return best
 
     def active_leases(self, repo_root: str, files: Iterable[str]) -> dict[str, Lease]:
         files_list = list(files)
@@ -307,9 +398,7 @@ class TrustDB:
         params = [repo_root, *files_list, now]
         with self._connect() as conn:
             rows = conn.execute(query, params).fetchall()
-        return {
-            row["file_path"]: Lease(row["file_path"], row["expires_at"], "write") for row in rows
-        }
+        return self._best_lease_map(rows, "write")
 
     def active_read_leases(self, repo_root: str, files: Iterable[str]) -> dict[str, Lease]:
         files_list = list(files)
@@ -324,9 +413,7 @@ class TrustDB:
         params = [repo_root, *files_list, now]
         with self._connect() as conn:
             rows = conn.execute(query, params).fetchall()
-        return {
-            row["file_path"]: Lease(row["file_path"], row["expires_at"], "read") for row in rows
-        }
+        return self._best_lease_map(rows, "read")
 
     def list_active_leases(self, repo_root: str) -> list[Lease]:
         now = int(time.time())
@@ -339,8 +426,11 @@ class TrustDB:
                 "SELECT file_path, expires_at FROM read_leases WHERE repo_root = ? AND (expires_at IS NULL OR expires_at > ?) ORDER BY file_path",
                 (repo_root, now),
             ).fetchall()
-        leases = [Lease(row["file_path"], row["expires_at"], "write") for row in rows]
-        leases.extend([Lease(row["file_path"], row["expires_at"], "read") for row in read_rows])
+        write_map = self._best_lease_map(rows, "write")
+        read_map = self._best_lease_map(read_rows, "read")
+        leases = list(write_map.values())
+        leases.extend(read_map.values())
+        leases.sort(key=lambda item: (item.lease_type, item.file_path))
         return leases
 
     def add_leases(self, repo_root: str, files: Iterable[str], ttl_hours: int, source: str) -> None:
@@ -354,6 +444,11 @@ class TrustDB:
                 """
                 INSERT INTO leases (repo_root, file_path, created_at, expires_at, source)
                 VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(repo_root, file_path) DO UPDATE SET
+                    created_at = excluded.created_at,
+                    expires_at = excluded.expires_at,
+                    source = excluded.source
+                WHERE leases.expires_at IS NOT NULL
                 """,
                 [(repo_root, file_path, now, expires_at, source) for file_path in files_list],
             )
@@ -368,6 +463,10 @@ class TrustDB:
                 """
                 INSERT INTO leases (repo_root, file_path, created_at, expires_at, source)
                 VALUES (?, ?, ?, NULL, ?)
+                ON CONFLICT(repo_root, file_path) DO UPDATE SET
+                    created_at = excluded.created_at,
+                    expires_at = NULL,
+                    source = excluded.source
                 """,
                 [(repo_root, file_path, now, source) for file_path in files_list],
             )
@@ -382,6 +481,10 @@ class TrustDB:
                 """
                 INSERT INTO read_leases (repo_root, file_path, created_at, expires_at, source)
                 VALUES (?, ?, ?, NULL, ?)
+                ON CONFLICT(repo_root, file_path) DO UPDATE SET
+                    created_at = excluded.created_at,
+                    expires_at = NULL,
+                    source = excluded.source
                 """,
                 [(repo_root, file_path, now, source) for file_path in files_list],
             )
@@ -595,6 +698,65 @@ class TrustDB:
             ).fetchall()
         return [BehavioralGuideline(guideline=row["guideline"], source=row["source"]) for row in rows]
 
+    def autonomy_preferences(self, repo_root: str) -> AutonomyPreferences:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT preferences_json
+                FROM autonomy_preferences
+                WHERE repo_root = ?
+                """,
+                (repo_root,),
+            ).fetchone()
+        if row is None:
+            return AutonomyPreferences()
+        return AutonomyPreferences.from_json(row["preferences_json"])
+
+    def learn_autonomy_preferences(self, repo_root: str, feedback_text: str) -> list[str]:
+        current = self.autonomy_preferences(repo_root)
+        updated, learned = update_preferences_from_feedback(current, feedback_text)
+        if updated == current:
+            return []
+        self._save_autonomy_preferences(repo_root, updated)
+        return learned
+
+    def merge_autonomy_preferences(
+        self,
+        repo_root: str,
+        inferred: AutonomyPreferences,
+    ) -> list[str]:
+        current = self.autonomy_preferences(repo_root)
+        updated, learned = merge_preferences(current, inferred)
+        if updated == current:
+            return []
+        self._save_autonomy_preferences(repo_root, updated)
+        return learned
+
+    def _save_autonomy_preferences(self, repo_root: str, preferences: AutonomyPreferences) -> None:
+        now = int(time.time())
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO autonomy_preferences (repo_root, preferences_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(repo_root) DO UPDATE SET
+                    preferences_json = excluded.preferences_json,
+                    updated_at = excluded.updated_at
+                """,
+                (repo_root, preferences.to_json(), now),
+            )
+
+    def delete_autonomy_preferences(self, repo_root: str) -> int:
+        with self._connect() as conn:
+            result = conn.execute(
+                """
+                DELETE FROM autonomy_preferences
+                WHERE repo_root = ?
+                """,
+                (repo_root,),
+            )
+        return int(result.rowcount)
+
     def delete_behavioral_guidelines(
         self,
         repo_root: str,
@@ -618,13 +780,14 @@ class TrustDB:
         min_count: int = 2,
         max_items: int = 8,
     ) -> list[GuidelineCandidate]:
-        """Suggest guidelines from repeated developer feedback text in traces."""
+        """Suggest guidelines from repeated corrective developer feedback in traces."""
         with self._connect() as conn:
             rows = conn.execute(
                 """
                 SELECT user_feedback_text
                 FROM decision_traces
                 WHERE repo_root = ?
+                  AND user_decision IN ('deny', 'revise')
                   AND user_feedback_text IS NOT NULL
                   AND TRIM(user_feedback_text) != ''
                 ORDER BY created_at DESC, id DESC
@@ -938,6 +1101,56 @@ class TrustDB:
             return 0
         return int(row["c"] or 0)
 
+    def verification_failure_rate(
+        self,
+        repo_root: str,
+        file_path: str,
+        *,
+        stage: str = "apply",
+        limit: int = 50,
+    ) -> float | None:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT verification_passed
+                FROM decision_traces
+                WHERE repo_root = ? AND file_path = ? AND stage = ?
+                  AND verification_passed IS NOT NULL
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (repo_root, file_path, stage, max(limit, 1)),
+            ).fetchall()
+        if not rows:
+            return None
+        failures = sum(1 for row in rows if int(row["verification_passed"]) == 0)
+        return failures / len(rows)
+
+    def model_confidence_stats(
+        self,
+        repo_root: str,
+        *,
+        file_path: str | None = None,
+        limit: int = 50,
+    ) -> ModelConfidenceStats:
+        where = ["repo_root = ?", "model_confidence_self_report IS NOT NULL"]
+        params: list[object] = [repo_root]
+        if file_path:
+            where.append("(file_path = ? OR file_path = '__session__')")
+            params.append(file_path)
+        query = (
+            "SELECT model_confidence_self_report FROM decision_traces "
+            f"WHERE {' AND '.join(where)} "
+            "ORDER BY created_at DESC, id DESC LIMIT ?"
+        )
+        params.append(max(limit, 1))
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        if not rows:
+            return ModelConfidenceStats(average=None, samples=0)
+        values = [float(row["model_confidence_self_report"]) for row in rows]
+        return ModelConfidenceStats(average=(sum(values) / len(values)), samples=len(values))
+
     def list_traces(self, repo_root: str, limit: int = 50) -> list[sqlite3.Row]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -1203,6 +1416,50 @@ class TrustDB:
                 break
         return snippets
 
+    def access_stats(self, repo_root: str, limit: int = 200) -> AccessStats:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT decision_type, touched_files_json
+                FROM decisions
+                WHERE repo_root = ? AND decision_type IN ('read', 'apply')
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (repo_root, max(limit, 1)),
+            ).fetchall()
+        read_actions = 0
+        write_actions = 0
+        write_file_counts: list[int] = []
+        multi_file_write_actions = 0
+        for row in rows:
+            decision_type = str(row["decision_type"])
+            touched_raw = row["touched_files_json"]
+            touched_count = 0
+            if touched_raw:
+                try:
+                    touched = json.loads(touched_raw)
+                    if isinstance(touched, list):
+                        touched_count = len(touched)
+                except Exception:
+                    touched_count = 0
+            if decision_type == "read":
+                read_actions += 1
+            elif decision_type == "apply":
+                write_actions += 1
+                write_file_counts.append(max(touched_count, 0))
+                if touched_count > 1:
+                    multi_file_write_actions += 1
+        avg_files = None
+        if write_file_counts:
+            avg_files = sum(write_file_counts) / len(write_file_counts)
+        return AccessStats(
+            read_actions=read_actions,
+            write_actions=write_actions,
+            avg_files_per_write=avg_files,
+            multi_file_write_actions=multi_file_write_actions,
+        )
+
     def checkin_calibration(self, repo_root: str) -> list[CheckInCalibration]:
         """Aggregate check-in outcomes by initiator/stage for calibration analysis."""
         with self._connect() as conn:
@@ -1243,6 +1500,17 @@ class TrustDB:
                 )
             )
         return stats
+
+    def model_checkin_calibration(self, repo_root: str) -> tuple[int, float | None]:
+        rows = self.checkin_calibration(repo_root)
+        model_rows = [row for row in rows if row.initiator == "model_proactive"]
+        if not model_rows:
+            return 0, None
+        total = sum(row.total for row in model_rows)
+        approvals = sum(row.approvals for row in model_rows)
+        if total <= 0:
+            return 0, None
+        return total, approvals / total
 
     def approved_apply_counts(self, repo_root: str, files: Iterable[str]) -> dict[str, int]:
         target = set(files)

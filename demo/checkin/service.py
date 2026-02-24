@@ -1,5 +1,6 @@
 def calculate_total(values: list[int]) -> int:
-    total = 0
-    for value in values:
-        total += value
-    return total
+    if not isinstance(values, list):
+        raise TypeError("values must be a list")
+    if not all(isinstance(v, int) for v in values):
+        raise TypeError("all values must be integers")
+    return sum(values)

@@ -71,6 +71,7 @@ class CheckInMessage(BaseModel):
         "uncertainty",
     ]
     content: str
+    recommendation: str | None = None
     options: list[str] | None = None
     assumptions: list[str] | None = None
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)

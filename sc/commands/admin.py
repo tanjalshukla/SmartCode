@@ -17,6 +17,7 @@ from ..commands.shared import open_trust_db, require_repo_root, try_repo_root
 from ..config import SAConfig, default_region, env_model_id, load_config, save_config
 from ..constraints import parse_constraints_file
 from ..session import ClaudeSession
+from ..trust_db import HardConstraint
 
 
 def _resolve_config_or_exit(
@@ -393,3 +394,53 @@ def constraints_clear(
         path_pattern=None if all else pattern,
     )
     print(f"[green]Removed {removed} hard constraints.[/green]")
+
+
+def constraints_relax(
+    pattern: str = typer.Argument(..., help="Exact constraint pattern to relax (for example: demo/checkin/*)."),
+    source: str | None = typer.Option(None, "--source", help="Relax only constraints from this source."),
+):
+    """Relax matching hard constraints to an always-allow override."""
+    repo_root = require_repo_root()
+    repo_root_str = str(repo_root)
+    trust_db = open_trust_db(repo_root)
+
+    existing = trust_db.list_constraints(repo_root_str)
+    matched = [
+        item
+        for item in existing
+        if item.path_pattern == pattern and (source is None or item.source == source)
+    ]
+    if not matched:
+        print("[yellow]No matching constraints found to relax.[/yellow]")
+        return
+
+    removed = trust_db.delete_constraints(
+        repo_root_str,
+        source=source,
+        path_pattern=pattern,
+    )
+
+    manual_constraints = [
+        item
+        for item in trust_db.list_constraints(repo_root_str)
+        if item.source == "manual_relax" and item.path_pattern != pattern
+    ]
+    manual_constraints.append(
+        HardConstraint(
+            path_pattern=pattern,
+            constraint_type="always_allow",
+            source="manual_relax",
+            overridable=False,
+        )
+    )
+    trust_db.replace_constraints(
+        repo_root_str,
+        source="manual_relax",
+        constraints=manual_constraints,
+    )
+
+    print(f"[green]Relaxed {removed} constraint(s) matching '{pattern}'.[/green]")
+    if source:
+        print(f"Source filter: {source}")
+    print("[green]Added manual override:[/green] always_allow")

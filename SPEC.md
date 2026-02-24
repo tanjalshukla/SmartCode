@@ -59,6 +59,12 @@ Legend: [implemented], [partial], [not implemented]
    - Persist this signal in traces and surface it in trust/prompt context.
    - Use it in policy decisions during review/test stages.
 
+6. **Structured plan rendering with code previews (survey feedback)**
+   - Render plans as structured markdown with section headers, file-level summaries, and inline code samples showing what will change.
+   - Display via Rich markdown rendering in the terminal so large plans are scannable.
+   - Goal: by the time the developer approves a plan, there is minimal ambiguity about what the agent will produce.
+   - Requires extending `IntentDeclaration` or adding a plan preview stage between intent and generation.
+
 ## Project Overview
 
 A CLI governance layer between a developer and an LLM coding agent. It learns when to pause and ask the developer vs. when to proceed autonomously, adapting over time to each developer's implicit preferences.

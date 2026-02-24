@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from sc.autonomy import AutonomyPreferences
 from sc.plan_gate import decide_plan_checkpoint
 from sc.schema import IntentDeclaration
 from sc.trust_db import HardConstraint, TrustDB
@@ -98,6 +99,94 @@ class PlanGateTests(unittest.TestCase):
             )
             self.assertTrue(decision.required)
             self.assertTrue(any("constrained files" in reason for reason in decision.reasons))
+
+    def test_run_tests_does_not_force_checkpoint_for_trusted_single_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = TrustDB(Path(tmpdir) / "trust.db")
+            repo = "/tmp/repo"
+            for _ in range(3):
+                db.record_trace(
+                    repo_root=repo,
+                    session_id="s1",
+                    task="task",
+                    stage="apply",
+                    action_type="write_request",
+                    file_path="demo/feature.py",
+                    change_type="general_change",
+                    diff_size=2,
+                    blast_radius=1,
+                    existing_lease=False,
+                    lease_type=None,
+                    prior_approvals=0,
+                    prior_denials=0,
+                    policy_action="proceed",
+                    policy_score=1.0,
+                    user_decision="auto_approve",
+                )
+            declaration = IntentDeclaration(
+                task_summary="Tighten validation and run tests",
+                planned_files=["demo/feature.py"],
+                planned_actions=["edit_code", "run_tests"],
+                planned_commands=["pytest -q"],
+            )
+            decision = decide_plan_checkpoint(
+                trust_db=db,
+                repo_root=repo,
+                declaration=declaration,
+                strict=False,
+                max_auto_files=1,
+            )
+            self.assertFalse(decision.required)
+
+    def test_autonomy_preference_skips_low_risk_multifile_plan_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = TrustDB(Path(tmpdir) / "trust.db")
+            declaration = IntentDeclaration(
+                task_summary="Low-risk cleanup",
+                planned_files=["demo/checkin/service.py", "demo/feature.py"],
+                planned_actions=["edit_code", "run_tests"],
+                planned_commands=["pytest -q"],
+                workflow_phase="planning",
+            )
+            decision = decide_plan_checkpoint(
+                trust_db=db,
+                repo_root="/tmp/repo",
+                declaration=declaration,
+                strict=False,
+                max_auto_files=1,
+                autonomy_preferences=AutonomyPreferences(
+                    prefer_fewer_checkins=True,
+                    skip_low_risk_plan_checkpoint=True,
+                ),
+            )
+            self.assertFalse(decision.required)
+
+    def test_high_blast_radius_requires_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_path = Path(tmpdir)
+            target = repo_path / "core.py"
+            target.write_text("def f():\n    return 1\n")
+            for idx in range(6):
+                consumer = repo_path / f"use_{idx}.py"
+                consumer.write_text("from core import f\n")
+
+            db = TrustDB(repo_path / ".sc_trust.db")
+            declaration = IntentDeclaration(
+                task_summary="Change core implementation",
+                planned_files=["core.py"],
+                planned_actions=["edit_code"],
+                planned_commands=[],
+            )
+            decision = decide_plan_checkpoint(
+                trust_db=db,
+                repo_root=str(repo_path),
+                declaration=declaration,
+                strict=False,
+                max_auto_files=1,
+                repo_root_path=repo_path,
+            )
+            self.assertTrue(decision.required)
+            self.assertTrue(any("high import count" in reason for reason in decision.reasons))
 
 
 if __name__ == "__main__":

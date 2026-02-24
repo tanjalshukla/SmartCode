@@ -117,6 +117,14 @@ def _confirm_create_files(missing_files: list[str]) -> bool:
     return response == "a"
 
 
+_ACTION_LABELS: dict[str, str] = {
+    "deny": "denied",
+    "check_in": "check-in required",
+    "proceed": "auto-approved",
+    "proceed_flag": "auto-approved (flagged)",
+}
+
+
 def _render_policy_snapshot(
     *,
     stage: str,
@@ -126,17 +134,13 @@ def _render_policy_snapshot(
 ) -> None:
     if not files:
         return
-    print(f"\n[bold]Policy snapshot ({stage})[/bold]")
+    print(f"\n[bold]Policy ({stage})[/bold]")
     for path in files:
         policy = policies.get(path)
-        history = histories.get(path)
-        if policy is None or history is None:
+        if policy is None:
             continue
-        print(
-            f"- {path}: {policy.action} (score={policy.score:.2f}, "
-            f"approvals={history.approvals}, weighted={history.effective_approvals:.1f}, "
-            f"rubber={history.rubber_stamp_approvals}, denials={history.denials})"
-        )
+        label = _ACTION_LABELS.get(policy.action, policy.action)
+        print(f"  {path}  →  {label}")
 
 
 def _show_system_prompt(phase: WorkflowPhase, prompt_text: str) -> None:

@@ -11,7 +11,17 @@ class SessionTests(unittest.TestCase):
         for idx in range(6):
             session.add_user(f"u{idx}")
         self.assertEqual(len(session.messages), 4)
-        self.assertEqual(session.messages[0]["content"], "u2")
+        self.assertEqual(session.messages[0]["content"], "u0")
+
+    def test_first_message_pinned_during_trim(self) -> None:
+        session = ClaudeSession("base", max_messages=3)
+        session.add_user("task")
+        session.add_assistant("a1")
+        session.add_user("u2")
+        session.add_assistant("a3")
+        self.assertEqual(len(session.messages), 3)
+        self.assertEqual(session.messages[0]["content"], "task")
+        self.assertEqual(session.messages[-1]["content"], "a3")
 
     def test_effective_prompt_includes_memory_and_context(self) -> None:
         session = ClaudeSession("base")
