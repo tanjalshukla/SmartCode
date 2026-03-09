@@ -305,9 +305,9 @@ Reporting: accuracy/precision/recall per policy, learning curves, feature ablati
 
 **PAHF (Liang et al., 2026, arXiv 2602.16173).** Meta/Princeton framework for continual personalization. Post-action feedback is "particularly important for robust personalization without pre-existing user data" — our cold-start scenario exactly. We took: immediate correction injection, drift detection design, four-phase evaluation protocol. Key difference: PAHF's memory is model-internal; ours is CLI-governed.
 
-## Future Work
+## Current Status
 
-### Current lab-study baseline (implemented)
+### Lab-study baseline (implemented)
 
 The current prototype is in a lab-study-ready state with the following baseline:
 
@@ -320,7 +320,7 @@ The current prototype is in a lab-study-ready state with the following baseline:
 - qualitative reason strings in the runtime UI
 - spec-aware planning via optional `--spec`
 
-### Outstanding gaps from papers and survey
+## Outstanding Gaps from Papers and Survey
 
 This subsection is the single place to look for important things discussed in related work or survey feedback that are not fully implemented in the current prototype.
 

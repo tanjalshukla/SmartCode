@@ -18,6 +18,17 @@ Most coding agents force a bad tradeoff: either approve everything manually, or 
 
 For architecture, internals, and future work, see `SPEC.md`.
 
+## Research Inputs
+
+Smart Coder is informed by a small set of papers and practitioner findings rather than a single source:
+
+- *Overseeing Agents Without Constant Oversight: Challenges and Opportunities*
+- *CowCorpus* (Huq et al., 2025, arXiv 2602.17588)
+- Grunde-McLaughlin et al. (2025, arXiv 2602.16844)
+- *PAHF* (Liang et al., 2026, arXiv 2602.16173)
+
+The README stays focused on setup and usage. `SPEC.md` contains the architecture details, what we took from these papers, and what remains unimplemented.
+
 ## Prerequisites
 
 - Python 3.11+
