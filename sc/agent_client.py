@@ -33,6 +33,18 @@ DECLARE_SCHEMA = {
     "planned_commands": ["pytest -q"],
     "workflow_phase": "research|planning|implementation|review|null",
     "notes": "string|null",
+    "expected_change_types": [
+        "general_change",
+        "documentation",
+        "test_generation",
+        "config_change",
+        "api_change",
+        "data_model_change",
+        "dependency_update",
+        "error_handling",
+    ],
+    "requirements_covered": ["string"],
+    "potential_deviations": ["string"],
 }
 
 READ_REQUEST_SCHEMA = {
@@ -161,6 +173,9 @@ class ClaudeClient:
             "2) You cannot solve the task with fewer files.\n"
             "3) Planned actions are minimal and directly required.\n"
             "If any file is optional, remove it.\n\n"
+            "Expected change types should reflect the likely implementation categories.\n"
+            "If a spec is provided, requirements_covered must map the plan back to concrete spec items.\n"
+            "If you suspect the implementation may need to diverge from the prompt or spec, list that in potential_deviations.\n\n"
             "Use check_in when you must choose between multiple valid approaches,\n"
             "or when design intent is ambiguous.\n\n"
             "Check-in quality requirements:\n"

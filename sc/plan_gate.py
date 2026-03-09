@@ -24,6 +24,7 @@ def decide_plan_checkpoint(
     max_auto_files: int,
     autonomy_preferences: AutonomyPreferences | None = None,
     repo_root_path: Path | None = None,
+    spec_required: bool = False,
 ) -> PlanCheckpointDecision:
     """Decide whether implementation must pause for explicit plan approval."""
     reasons: list[str] = []
@@ -42,6 +43,10 @@ def decide_plan_checkpoint(
     multi_action_reason = len(material_actions) > 1
     if multi_action_reason:
         reasons.append("plan includes multiple action types")
+    if declaration.potential_deviations:
+        reasons.append("plan anticipates possible deviations")
+    if spec_required and not declaration.requirements_covered:
+        reasons.append("spec provided but plan does not map work to requirements")
 
     low_trust_files: list[str] = []
     constrained_files: list[str] = []
@@ -52,8 +57,8 @@ def decide_plan_checkpoint(
         if history.denials > 0 and history.approvals <= history.denials:
             low_trust_files.append(path)
 
-        constraint = trust_db.strongest_constraint(repo_root, path)
-        if constraint and constraint.constraint_type in {"always_check_in", "always_deny"}:
+        constraint = trust_db.strongest_constraint(repo_root, path, access_type="write")
+        if constraint and constraint.policy_for("write") in {"always_check_in", "always_deny"}:
             constrained_files.append(path)
 
         if is_security_sensitive(path, ""):
@@ -88,6 +93,17 @@ def decide_plan_checkpoint(
             preview += ", ..."
         reasons.append(f"security-sensitive paths: {preview}")
 
+    verification_risk_files: list[str] = []
+    for path in planned_files:
+        failure_rate = trust_db.verification_failure_rate(repo_root, path, stage="apply")
+        if failure_rate is not None and failure_rate >= 0.34:
+            verification_risk_files.append(path)
+    if verification_risk_files:
+        preview = ", ".join(verification_risk_files[:3])
+        if len(verification_risk_files) > 3:
+            preview += ", ..."
+        reasons.append(f"recent verification failures in area: {preview}")
+
     high_blast_reason = bool(high_blast_files)
     if high_blast_reason:
         preview = ", ".join(high_blast_files[:3])
@@ -109,6 +125,8 @@ def decide_plan_checkpoint(
                 constrained_reason,
                 security_reason,
                 high_blast_reason,
+                bool(declaration.potential_deviations),
+                spec_required and not declaration.requirements_covered,
                 declaration.workflow_phase == "research",
             )
         )

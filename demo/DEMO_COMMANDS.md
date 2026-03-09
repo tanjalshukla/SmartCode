@@ -4,13 +4,11 @@
 
 ```bash
 git restore demo/checkin/service.py demo/feature.py demo/docs/notes.md
-rm -f demo/two_sum.py demo/test_two_sum.py
+rm -f demo/two_sum.py demo/test_two_sum.py demo/validation.py
 unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
 aws sso login --profile dev
-python -m sc rules constraints-clear --all
-python -m sc rules guidelines-clear --all
-python -m sc observe revoke --all
-python -m sc config set-threshold 1
+python -m sc reset --yes
+python -m sc config set-mode balanced
 python -m sc config set-verification-cmd "python -m py_compile demo/feature.py demo/checkin/service.py"
 ```
 
@@ -18,8 +16,7 @@ python -m sc config set-verification-cmd "python -m py_compile demo/feature.py d
 
 ```bash
 python -m sc rules import demo/DEMO_RULES.md
-python -m sc rules constraints
-python -m sc rules guidelines
+python -m sc rules
 ```
 
 ## 2. Multi-file task
@@ -61,7 +58,7 @@ python -m sc observe preferences
 ```bash
 python -m sc run \
 "Read demo/checkin/service.py and demo/feature.py. Improve validation and refactor repeated logic while preserving function signatures and behavior. If there is a meaningful architecture choice, ask one check-in with options." \
---show-intent 
+--show-intent
 ```
 
 Replies:
@@ -77,7 +74,7 @@ python -m sc run \
 --show-intent
 ```
 
-Expected: fewer model check-ins than prior run (possibly none), and more auto-approval via adaptive policy.
+Expected: fewer model check-ins than prior run (possibly none), and more auto-approval.
 
 ```bash
 python -m sc observe preferences
@@ -105,9 +102,9 @@ python -m sc run \
 Replies: read `a`, apply `d`, same feedback text.
 
 ```bash
-python -m sc rules guidelines-suggest --min-count 2
-python -m sc rules guidelines-suggest --min-count 2 --apply
-python -m sc rules guidelines
+python -m sc rules suggest --min-count 2
+python -m sc rules suggest --min-count 2 --apply
+python -m sc rules
 ```
 
 Payoff run (show learned guideline influence):
@@ -126,13 +123,13 @@ Expected: model avoids function-signature changes and sticks to internal logic i
 python -m sc report
 python -m sc observe checkin-stats
 python -m sc observe traces --limit 10
-python -m sc observe explain <trace_id_from_traces>
+python -m sc observe explain <trace_id>
 python -m sc report --json | python3 -m json.tool | head -30
 ```
 
 ## If time permits
 
 ```bash
-python -m sc observe revoke demo/feature.py
+python -m sc revoke demo/feature.py
 python -m sc observe leases
 ```

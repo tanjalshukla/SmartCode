@@ -17,7 +17,7 @@ from ..schema import CheckInMessage, IntentDeclaration, WorkflowPhase
 from ..session import ClaudeSession
 from ..session_feedback import SessionFeedback
 from ..trust_db import TrustDB
-from .helpers import _apply_feedback_learning, _build_patch_from_updates
+from .helpers import SpecContext, StudyContext, _apply_feedback_learning, _build_patch_from_updates
 from .ui import _show_system_prompt
 
 
@@ -45,6 +45,8 @@ def _apply_phase_transition(
     repo_root: str,
     current_phase: WorkflowPhase,
     next_phase: WorkflowPhase,
+    autonomy_mode: str,
+    spec_digest: str | None = None,
 ) -> WorkflowPhase:
     if next_phase == current_phase:
         return current_phase
@@ -52,6 +54,8 @@ def _apply_phase_transition(
         trust_db=trust_db,
         repo_root=repo_root,
         workflow_phase=next_phase,
+        autonomy_mode=autonomy_mode,
+        spec_digest=spec_digest,
     )
     return next_phase
 
@@ -65,6 +69,8 @@ def _apply_phase_transition_with_display(
     next_phase: WorkflowPhase,
     show_system_prompt: bool,
     feedback: SessionFeedback,
+    autonomy_mode: str,
+    spec_digest: str | None = None,
 ) -> WorkflowPhase:
     previous_phase = current_phase
     current_phase = _apply_phase_transition(
@@ -73,6 +79,8 @@ def _apply_phase_transition_with_display(
         repo_root=repo_root,
         current_phase=current_phase,
         next_phase=next_phase,
+        autonomy_mode=autonomy_mode,
+        spec_digest=spec_digest,
     )
     feedback.set_phase(current_phase)
     if show_system_prompt and current_phase != previous_phase:
@@ -91,6 +99,7 @@ def _handle_model_checkin(
     session: ClaudeSession,
     feedback: SessionFeedback,
     client: ClaudeClient | None = None,
+    study_context: StudyContext | None = None,
 ) -> tuple[bool, str, str | None]:
     print(f"\n[bold]Model check-in ({stage})[/bold]")
     print(f"Type: {check_in.check_in_type}")
@@ -172,6 +181,10 @@ def _handle_model_checkin(
         model_confidence_self_report=check_in.confidence,
         model_assumptions=check_in.assumptions,
         check_in_initiator="model_proactive",
+        participant_id=study_context.participant_id if study_context else None,
+        study_run_id=study_context.study_run_id if study_context else None,
+        study_task_id=study_context.study_task_id if study_context else None,
+        autonomy_mode=study_context.autonomy_mode if study_context else None,
     )
     if not approved:
         feedback.note_decision(
@@ -208,6 +221,9 @@ def _generate_updates_with_repair(
     current_phase: WorkflowPhase,
     show_system_prompt: bool,
     feedback: SessionFeedback,
+    autonomy_mode: str,
+    study_context: StudyContext | None = None,
+    spec_context: SpecContext | None = None,
 ) -> tuple[dict[str, str], str, list[str]]:
     update_error: str | None = None
     max_update_attempts = 3
@@ -221,6 +237,8 @@ def _generate_updates_with_repair(
                 trust_db=trust_db,
                 repo_root=repo_root_str,
                 workflow_phase=current_phase,
+                autonomy_mode=autonomy_mode,
+                spec_digest=spec_context.digest if spec_context else None,
             )
             _refresh_session_context(session, feedback)
             print("[cyan]Calling model for file updates...[/cyan]")
@@ -247,6 +265,7 @@ def _generate_updates_with_repair(
                 session=session,
                 feedback=feedback,
                 client=client,
+                study_context=study_context,
             )
             if not approved:
                 print("[yellow]Task denied during model check-in.[/yellow]")
@@ -260,6 +279,8 @@ def _generate_updates_with_repair(
                 next_phase=next_phase,
                 show_system_prompt=show_system_prompt,
                 feedback=feedback,
+                autonomy_mode=autonomy_mode,
+                spec_digest=spec_context.digest if spec_context else None,
             )
             continue
         except Exception as exc:

@@ -8,6 +8,18 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from .phase import WorkflowPhase
 
 
+ChangeType = Literal[
+    "general_change",
+    "documentation",
+    "test_generation",
+    "config_change",
+    "api_change",
+    "data_model_change",
+    "dependency_update",
+    "error_handling",
+]
+
+
 class ReadRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -40,6 +52,9 @@ class IntentDeclaration(BaseModel):
     planned_commands: list[str]
     workflow_phase: WorkflowPhase | None = None
     notes: str | None = None
+    expected_change_types: list[ChangeType] = Field(default_factory=list)
+    requirements_covered: list[str] = Field(default_factory=list)
+    potential_deviations: list[str] = Field(default_factory=list)
 
     @field_validator("planned_files")
     @classmethod

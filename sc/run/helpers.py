@@ -5,6 +5,7 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 from rich import print
@@ -20,6 +21,21 @@ from ..policy import PolicyDecision, PolicyInput, decide_action
 from ..schema import IntentDeclaration
 from ..session import ClaudeSession
 from ..trust_db import HardConstraint, PolicyHistory, TrustDB
+
+
+@dataclass(frozen=True)
+class StudyContext:
+    participant_id: str | None = None
+    study_run_id: str | None = None
+    study_task_id: str | None = None
+    autonomy_mode: str | None = None
+
+
+@dataclass(frozen=True)
+class SpecContext:
+    path: str
+    digest: str
+    sha256: str
 
 
 def _append_file_context(
@@ -175,8 +191,13 @@ def _constraint_index(
     trust_db: TrustDB,
     repo_root: str,
     files: list[str],
+    *,
+    access_type: str = "write",
 ) -> dict[str, HardConstraint | None]:
-    return {path: trust_db.strongest_constraint(repo_root, path) for path in files}
+    return {
+        path: trust_db.strongest_constraint(repo_root, path, access_type=access_type)
+        for path in files
+    }
 
 
 def _auto_read_user_decision(
@@ -196,12 +217,9 @@ def _learn_preferences_from_feedback(
     feedback_text: str,
     client: ClaudeClient | None = None,
 ) -> list[str]:
-    """Learn autonomy preferences from feedback with model fallback for ambiguous text."""
-    before = trust_db.autonomy_preferences(repo_root)
-    learned = trust_db.learn_autonomy_preferences(repo_root, feedback_text)
-    after = trust_db.autonomy_preferences(repo_root)
-    if learned or after != before or client is None:
-        return learned
+    """Learn autonomy preferences from feedback using model classification."""
+    if not client:
+        return []
     model_payload = client.summarize_autonomy_feedback(feedback_text)
     if not model_payload:
         return []
@@ -233,3 +251,24 @@ def _apply_feedback_learning(
     if guidance_prefix:
         session.add_memory_note(f"{guidance_prefix}: {feedback_text}")
     return learned
+
+
+def _load_spec_context(repo_root: Path, spec_path: str | None, max_chars: int) -> SpecContext | None:
+    if not spec_path:
+        return None
+    path = Path(spec_path)
+    resolved = path if path.is_absolute() else (repo_root / path)
+    if not resolved.exists():
+        raise FileNotFoundError(f"Spec file not found: {resolved}")
+    content = resolved.read_text()
+    digest = _truncate_content(content, max(max_chars // 3, 1200))
+    sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    try:
+        display_path = str(resolved.relative_to(repo_root))
+    except ValueError:
+        display_path = str(resolved)
+    return SpecContext(
+        path=display_path,
+        digest=f"{display_path} (sha256 {sha256[:12]})\n{digest}",
+        sha256=sha256,
+    )

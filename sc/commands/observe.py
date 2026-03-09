@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import time
 from pathlib import Path
@@ -10,6 +11,7 @@ from rich.table import Table
 
 from ..commands.shared import open_trust_db, require_repo_root
 from ..cli_shared import is_approval_decision as _is_approval_decision
+from ..config import load_config
 from ..demo_seed_data import seed_demo_data
 
 def _format_expiry(expires_at: int | None) -> str:
@@ -321,6 +323,31 @@ def preferences_clear(
         print("[yellow]No learned autonomy preferences found.[/yellow]")
 
 
+def clear_traces(
+    yes: bool = typer.Option(False, "--yes", help="Confirm clearing decision traces."),
+    file: str | None = typer.Option(None, "--file", help="Clear traces for a single file only."),
+):
+    """Clear decision traces, resetting policy to cold-start."""
+    if not yes:
+        print("[red]Refusing to clear traces without --yes.[/red]")
+        raise typer.Exit(code=1)
+    repo_root = require_repo_root()
+    trust_db = open_trust_db(repo_root)
+    repo_root_str = str(repo_root)
+    if file:
+        removed = trust_db.clear_traces_for_file(repo_root_str, file)
+        if removed:
+            print(f"[green]Cleared {removed} traces for {file}.[/green]")
+        else:
+            print(f"[yellow]No traces found for {file}.[/yellow]")
+    else:
+        removed = trust_db.clear_traces(repo_root_str)
+        if removed:
+            print(f"[green]Cleared {removed} decision traces.[/green]")
+        else:
+            print("[yellow]No decision traces found.[/yellow]")
+
+
 def report(
     json_out: bool = typer.Option(False, "--json", help="Output report as JSON."),
 ):
@@ -462,6 +489,120 @@ def report(
                 f"{row.approval_rate * 100:.1f}",
             )
         print(table)
+
+
+def _session_summary(rows: list[dict]) -> dict[str, object]:
+    if not rows:
+        return {
+            "trace_rows": 0,
+            "stage_counts": {},
+            "decision_counts": {},
+        }
+    stage_counts: dict[str, int] = {}
+    decision_counts: dict[str, int] = {}
+    for row in rows:
+        stage = str(row["stage"])
+        decision = str(row["user_decision"])
+        stage_counts[stage] = stage_counts.get(stage, 0) + 1
+        decision_counts[decision] = decision_counts.get(decision, 0) + 1
+    first = rows[0]
+    return {
+        "session_id": first["session_id"],
+        "participant_id": first["participant_id"],
+        "study_run_id": first["study_run_id"],
+        "study_task_id": first["study_task_id"],
+        "autonomy_mode": first["autonomy_mode"],
+        "trace_rows": len(rows),
+        "stage_counts": stage_counts,
+        "decision_counts": decision_counts,
+    }
+
+
+def export(
+    out: Path = typer.Option(
+        Path(".sc/exports"),
+        "--out",
+        help="Directory to write session export artifacts into.",
+    ),
+    session_id: str | None = typer.Option(
+        None,
+        "--session-id",
+        help="Session id to export. Defaults to the latest recorded session.",
+    ),
+):
+    """Export the latest session bundle for lab analysis."""
+    repo_root = require_repo_root()
+    trust_db = open_trust_db(repo_root)
+    repo_root_str = str(repo_root)
+    resolved_session_id = session_id or trust_db.latest_session_id(repo_root_str)
+    if not resolved_session_id:
+        print("[yellow]No recorded sessions to export.[/yellow]")
+        raise typer.Exit(code=1)
+
+    rows = [dict(row) for row in trust_db.session_traces(repo_root_str, resolved_session_id)]
+    revisions = [dict(row) for row in trust_db.session_plan_revisions(repo_root_str, resolved_session_id)]
+    if not rows:
+        print(f"[yellow]No traces found for session {resolved_session_id}.[/yellow]")
+        raise typer.Exit(code=1)
+
+    output_dir = out if out.is_absolute() else (repo_root / out)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stem = resolved_session_id
+    traces_csv_path = output_dir / f"{stem}_traces.csv"
+    bundle_json_path = output_dir / f"{stem}_bundle.json"
+
+    fieldnames = list(rows[0].keys())
+    with traces_csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    config = load_config(repo_root)
+    prefs = trust_db.autonomy_preferences(repo_root_str)
+    bundle = {
+        "repo_root": repo_root_str,
+        "summary": _session_summary(rows),
+        "config": config.to_dict() if config else None,
+        "constraints": [item.__dict__ for item in trust_db.list_constraints(repo_root_str)],
+        "guidelines": [item.__dict__ for item in trust_db.list_behavioral_guidelines(repo_root_str)],
+        "preferences": {
+            "prefer_fewer_checkins": prefs.prefer_fewer_checkins,
+            "allowed_checkin_topics": list(prefs.allowed_checkin_topics),
+            "skip_low_risk_plan_checkpoint": prefs.skip_low_risk_plan_checkpoint,
+            "scoped_paths": list(prefs.scoped_paths),
+        },
+        "plan_revisions": revisions,
+        "traces": rows,
+    }
+    bundle_json_path.write_text(json.dumps(bundle, indent=2), encoding="utf-8")
+
+    print("[green]Export complete.[/green]")
+    print(f"  Session: {resolved_session_id}")
+    print(f"  Bundle: {bundle_json_path}")
+    print(f"  CSV: {traces_csv_path}")
+
+
+def reset(
+    yes: bool = typer.Option(False, "--yes", help="Confirm resetting all learned state."),
+):
+    """Reset all learned state (history, access grants, and preferences) to cold-start."""
+    if not yes:
+        print("[red]Refusing to reset without --yes.[/red]")
+        raise typer.Exit(code=1)
+    repo_root = require_repo_root()
+    trust_db = open_trust_db(repo_root)
+    repo_root_str = str(repo_root)
+    cleared_traces = trust_db.clear_traces(repo_root_str)
+    cleared_revisions = trust_db.clear_plan_revisions(repo_root_str)
+    revoked_leases, revoked_decisions = trust_db.revoke(repo_root_str, file_path=None, reset_counts=True)
+    cleared_prefs = trust_db.delete_autonomy_preferences(repo_root_str)
+    print(f"[green]Reset complete:[/green]")
+    print(
+        f"  History: cleared {cleared_traces} traces, "
+        f"{cleared_revisions} plan revisions, {revoked_decisions} approval records"
+    )
+    print(f"  Access: revoked {revoked_leases} leases")
+    print(f"  Preferences: {'cleared' if cleared_prefs else 'none to clear'}")
 
 
 def demo_seed(

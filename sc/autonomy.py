@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from fnmatch import fnmatch
 import json
 from pathlib import PurePosixPath
-import re
 
 
 _CHECKIN_TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
@@ -18,38 +17,6 @@ _CHECKIN_TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
     "deployment": ("deploy", "deployment", "release", "rollout"),
 }
 
-_PREFER_AUTONOMY_PATTERNS = (
-    re.compile(r"\bproceed autonom\w*\b"),
-    re.compile(r"\bwithout check-?ins?\b"),
-    re.compile(r"\bfewer check-?ins?\b"),
-    re.compile(r"\bminimi[sz]e\s+(?:interruptions?|check-?ins?)\b"),
-    re.compile(r"\blow[- ]risk\b.*\bautonom\w*\b"),
-    re.compile(r"\bauto-?approve\b"),
-    re.compile(r"\bskip check-?ins?\b"),
-    re.compile(r"\bdon['']t ask about\b"),
-    re.compile(r"\btrust me\b"),
-    re.compile(r"\bjust do it\b"),
-    re.compile(r"\bjust go ahead\b"),
-    re.compile(r"\bgo ahead\b"),
-    re.compile(r"\bstop asking\b"),
-    re.compile(r"\bstop checking in\b"),
-    re.compile(r"\bdo(?:n't| not) bother\b"),
-    re.compile(r"\byou decide\b"),
-    re.compile(r"\byour call\b"),
-    re.compile(r"\bdo whatever\b"),
-    re.compile(r"\bi don'?t care\b"),
-    re.compile(r"\bleave me alone\b"),
-)
-
-_ONLY_CHECKIN_FOR_PATTERN = re.compile(r"only\s+check-?\s*in\s+for\s+([^.!?;]+)")
-_NEGATION_CONSTRAINT_PATTERN = re.compile(r"\b(do not|don't|never)\s+change\b")
-_PATH_TOKEN_PATTERN = re.compile(r"\b[\w\-\./\*]+\b")
-
-
-def _normalize(text: str) -> str:
-    return " ".join(text.split()).strip().lower()
-
-
 def _normalize_scope_token(token: str) -> str | None:
     cleaned = token.strip().strip(".,:;()[]{}\"'")
     if "/" not in cleaned:
@@ -58,29 +25,6 @@ def _normalize_scope_token(token: str) -> str | None:
     if not norm or norm == "." or norm.startswith("../"):
         return None
     return norm
-
-
-def _extract_scope_tokens(text: str) -> tuple[str, ...]:
-    scopes: set[str] = set()
-    for token in _PATH_TOKEN_PATTERN.findall(text):
-        normalized = _normalize_scope_token(token)
-        if normalized:
-            scopes.add(normalized)
-    return tuple(sorted(scopes))
-
-
-def _contains_topic(text: str, phrase: str) -> bool:
-    if " " in phrase:
-        return phrase in text
-    return bool(re.search(rf"\b{re.escape(phrase)}\b", text))
-
-
-def _extract_topics(text: str) -> set[str]:
-    discovered: set[str] = set()
-    for topic, hints in _CHECKIN_TOPIC_KEYWORDS.items():
-        if any(_contains_topic(text, hint) for hint in hints):
-            discovered.add(topic)
-    return discovered
 
 
 @dataclass(frozen=True)
@@ -161,60 +105,6 @@ def _scope_matches(file_path: str, scopes: tuple[str, ...]) -> bool:
         if prefix and norm_path.startswith(prefix + "/"):
             return True
     return False
-
-
-def update_preferences_from_feedback(
-    current: AutonomyPreferences,
-    feedback_text: str,
-) -> tuple[AutonomyPreferences, list[str]]:
-    text = _normalize(feedback_text)
-    if not text:
-        return current, []
-
-    prefer_fewer = current.prefer_fewer_checkins
-    allowed = set(current.allowed_checkin_topics)
-    skip_plan = current.skip_low_risk_plan_checkpoint
-    scoped_paths = set(current.scoped_paths)
-    learned: list[str] = []
-
-    if _NEGATION_CONSTRAINT_PATTERN.search(text):
-        return current, learned
-
-    if any(pattern.search(text) for pattern in _PREFER_AUTONOMY_PATTERNS):
-        if not prefer_fewer:
-            learned.append("prefer fewer low-risk check-ins")
-        prefer_fewer = True
-
-    clause_match = _ONLY_CHECKIN_FOR_PATTERN.search(text)
-    if clause_match:
-        discovered = _extract_topics(clause_match.group(1))
-        if discovered:
-            if tuple(sorted(discovered)) != current.allowed_checkin_topics:
-                learned.append(f"check-in scope={','.join(sorted(discovered))}")
-            allowed = discovered
-            prefer_fewer = True
-            if discovered.issubset({"api", "signature", "schema", "security", "architecture"}):
-                skip_plan = True
-
-    discovered_scopes = _extract_scope_tokens(text)
-    if discovered_scopes:
-        before = tuple(sorted(scoped_paths))
-        scoped_paths |= set(discovered_scopes)
-        if tuple(sorted(scoped_paths)) != before:
-            learned.append(f"scope={','.join(sorted(discovered_scopes))}")
-
-    if "do not show me plan" in text or "skip plan checkpoint" in text:
-        if not skip_plan:
-            learned.append("skip low-risk plan checkpoints")
-        skip_plan = True
-
-    updated = AutonomyPreferences(
-        prefer_fewer_checkins=prefer_fewer,
-        allowed_checkin_topics=tuple(sorted(allowed)),
-        skip_low_risk_plan_checkpoint=skip_plan,
-        scoped_paths=tuple(sorted(scoped_paths)),
-    )
-    return updated, learned
 
 
 def preferences_from_model_payload(payload: dict[str, object]) -> AutonomyPreferences:

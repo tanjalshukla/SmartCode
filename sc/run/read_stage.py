@@ -10,9 +10,10 @@ from rich import print
 
 from ..agent_client import ClaudeClient
 from ..autonomy import adjusted_policy_thresholds
-from ..config import SAConfig
+from ..config import SAConfig, autonomy_profile
 from ..policy import PolicyDecision
 from .helpers import (
+    StudyContext,
     _apply_feedback_learning,
     _append_file_context,
     _auto_read_user_decision,
@@ -23,8 +24,10 @@ from .traces import _policy_checkin_initiators, _record_traces
 from .ui import (
     _confirm_read_missing,
     _prompt_read,
+    _render_autonomy_rationale,
     _render_file_list,
     _render_policy_snapshot,
+    _summarize_autonomy_rationale,
 )
 from ..schema import ReadRequest
 from ..session import ClaudeSession
@@ -43,6 +46,7 @@ def _record_auto_read_traces(
     read_histories: dict[str, PolicyHistory],
     read_policies: dict[str, PolicyDecision],
     read_leases: dict[str, str | None],
+    study_context: StudyContext | None = None,
 ) -> None:
     for path in auto_reads:
         auto_user_decision = _auto_read_user_decision(path, read_leases, read_policies)
@@ -62,6 +66,7 @@ def _record_auto_read_traces(
             diff_sizes={path: None},
             blast_radius=len(requested),
             existing_leases=read_leases,
+            study_context=study_context,
         )
 
 
@@ -77,6 +82,7 @@ def _process_read_request(
     session: ClaudeSession,
     feedback: SessionFeedback,
     client: ClaudeClient | None = None,
+    study_context: StudyContext | None = None,
 ) -> None:
     requested = request.files
     if not requested:
@@ -89,7 +95,7 @@ def _process_read_request(
         raise typer.Exit(code=0)
 
     active_reads = trust_db.active_read_leases(repo_root_str, requested)
-    read_constraints = _constraint_index(trust_db, repo_root_str, requested)
+    read_constraints = _constraint_index(trust_db, repo_root_str, requested, access_type="read")
     read_histories: dict[str, PolicyHistory] = {}
     read_policies: dict[str, PolicyDecision] = {}
     read_leases: dict[str, str | None] = {}
@@ -105,16 +111,18 @@ def _process_read_request(
     )
     autonomy_preferences = trust_db.autonomy_preferences(repo_root_str)
     model_checkin_total, model_checkin_rate = trust_db.model_checkin_calibration(repo_root_str)
+    profile = autonomy_profile(config)
 
     # Evaluate policy outcome per requested path.
     for path in requested:
         history = trust_db.policy_history(repo_root_str, path, stage="read")
         read_histories[path] = history
 
-        constraint = read_constraints.get(path)
+        constraint = trust_db.strongest_constraint(repo_root_str, path, access_type="read")
         if constraint is not None:
-            read_leases[path] = constraint.constraint_type
-            if constraint.constraint_type == "always_deny":
+            read_policy = constraint.policy_for("read")
+            read_leases[path] = read_policy
+            if read_policy == "always_deny":
                 read_policies[path] = PolicyDecision(
                     action="check_in",
                     score=-1000.0,
@@ -122,7 +130,7 @@ def _process_read_request(
                 )
                 denied_reads.append(path)
                 continue
-            if constraint.constraint_type == "always_check_in":
+            if read_policy == "always_check_in":
                 read_policies[path] = PolicyDecision(
                     action="check_in",
                     score=-500.0,
@@ -130,7 +138,7 @@ def _process_read_request(
                 )
                 needs_prompt.append(path)
                 continue
-            if constraint.constraint_type == "always_allow":
+            if read_policy == "always_allow":
                 read_policies[path] = PolicyDecision(
                     action="proceed",
                     score=900.0,
@@ -152,8 +160,8 @@ def _process_read_request(
 
         if config.adaptive_policy_enabled:
             proceed_threshold, flag_threshold = adjusted_policy_thresholds(
-                config.policy_proceed_threshold,
-                config.policy_flag_threshold,
+                profile.proceed_threshold,
+                profile.flag_threshold,
                 autonomy_preferences,
                 file_path=path,
                 model_checkin_approval_rate=model_checkin_rate,
@@ -194,6 +202,10 @@ def _process_read_request(
         histories=read_histories,
         policies=read_policies,
     )
+    _render_autonomy_rationale(
+        "read",
+        _summarize_autonomy_rationale(files=requested, policies=read_policies),
+    )
 
     if denied_reads:
         print("[red]Read denied by hard constraints:[/red]")
@@ -223,6 +235,7 @@ def _process_read_request(
             diff_sizes={path: None for path in requested},
             blast_radius=len(requested),
             existing_leases=read_leases,
+            study_context=study_context,
         )
         feedback.note_decision(False)
         raise typer.Exit(code=1)
@@ -260,6 +273,7 @@ def _process_read_request(
                 existing_leases=read_leases,
                 user_feedback_text=read_feedback,
                 check_in_initiators=_policy_checkin_initiators(requested, read_policies),
+                study_context=study_context,
             )
             feedback.note_decision(
                 False,
@@ -292,6 +306,7 @@ def _process_read_request(
             read_histories=read_histories,
             read_policies=read_policies,
             read_leases=read_leases,
+            study_context=study_context,
         )
         _record_traces(
             trust_db=trust_db,
@@ -311,6 +326,7 @@ def _process_read_request(
             existing_leases=read_leases,
             user_feedback_text=read_feedback,
             check_in_initiators=_policy_checkin_initiators(needs_prompt, read_policies),
+            study_context=study_context,
         )
         feedback.note_decision(True, response_time_ms=response_time_ms)
         _apply_feedback_learning(
@@ -331,7 +347,7 @@ def _process_read_request(
             touched_files=requested,
         )
         if flagged_auto_reads:
-            print("[yellow]Read auto-approved with caution for:[/yellow]")
+            print("[yellow]Read approved. Flagged for review:[/yellow]")
             _render_file_list(flagged_auto_reads)
         trust_db.add_permanent_read_leases(repo_root_str, auto_without_lease, source="policy_auto")
         _record_auto_read_traces(
@@ -344,6 +360,7 @@ def _process_read_request(
             read_histories=read_histories,
             read_policies=read_policies,
             read_leases=read_leases,
+            study_context=study_context,
         )
         feedback.note_decision(True)
 

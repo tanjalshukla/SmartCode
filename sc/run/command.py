@@ -14,7 +14,7 @@ from rich import print
 from rich.syntax import Syntax
 
 from ..agent_client import ClaudeClient
-from ..config import SAConfig, config_dir
+from ..config import SAConfig, autonomy_profile, config_dir
 from ..plan_gate import decide_plan_checkpoint
 from ..policy import PolicyDecision
 from ..prompt_builder import build_run_system_prompt
@@ -42,6 +42,9 @@ from .ui import (
 )
 from .helpers import (
     _apply_feedback_learning,
+    SpecContext,
+    StudyContext,
+    _load_spec_context,
     _plan_hash,
     _read_file_context,
     _resolve_config,
@@ -68,11 +71,14 @@ def _resolve_intent_declaration(
     current_phase: WorkflowPhase,
     show_system_prompt: bool,
     feedback: SessionFeedback,
+    study_context: StudyContext,
+    spec_context: SpecContext | None,
 ) -> _IntentResolution:
     declaration: IntentDeclaration | None = None
     plan_revision_round = 0
     intent_rendered_during_checkpoint = False
     force_implementation_after_checkpoint = False
+    profile = autonomy_profile(config)
 
     while declaration is None:
         try:
@@ -80,6 +86,8 @@ def _resolve_intent_declaration(
                 trust_db=trust_db,
                 repo_root=repo_root_str,
                 workflow_phase=current_phase,
+                autonomy_mode=profile.mode,
+                spec_digest=spec_context.digest if spec_context else None,
             )
             _refresh_session_context(session, feedback)
             print("[cyan]Calling model for intent...[/cyan]")
@@ -105,6 +113,7 @@ def _resolve_intent_declaration(
                 session=session,
                 feedback=feedback,
                 client=client,
+                study_context=study_context,
             )
             if not approved:
                 print("[yellow]Task denied during model check-in.[/yellow]")
@@ -118,6 +127,8 @@ def _resolve_intent_declaration(
                 next_phase=next_phase,
                 show_system_prompt=show_system_prompt,
                 feedback=feedback,
+                autonomy_mode=study_context.autonomy_mode or "balanced",
+                spec_digest=spec_context.digest if spec_context else None,
             )
             continue
 
@@ -133,6 +144,7 @@ def _resolve_intent_declaration(
                 session=session,
                 feedback=feedback,
                 client=client,
+                study_context=study_context,
             )
             continue
 
@@ -142,10 +154,11 @@ def _resolve_intent_declaration(
             trust_db=trust_db,
             repo_root=repo_root_str,
             declaration=candidate,
-            strict=config.strict_plan_gate,
-            max_auto_files=config.plan_checkpoint_max_files,
+            strict=profile.strict_plan_gate,
+            max_auto_files=profile.plan_checkpoint_max_files,
             autonomy_preferences=autonomy_preferences,
             repo_root_path=repo_root,
+            spec_required=spec_context is not None,
         )
         if checkpoint.required:
             intent_rendered_during_checkpoint = True
@@ -167,6 +180,10 @@ def _resolve_intent_declaration(
                 reasons=checkpoint.reasons,
                 developer_feedback=plan_feedback,
                 approved=plan_decision == "approve",
+                participant_id=study_context.participant_id,
+                study_run_id=study_context.study_run_id,
+                study_task_id=study_context.study_task_id,
+                autonomy_mode=study_context.autonomy_mode,
             )
             trust_db.record_trace(
                 repo_root=repo_root_str,
@@ -193,6 +210,10 @@ def _resolve_intent_declaration(
                 edit_distance=None,
                 user_feedback_text=plan_feedback,
                 check_in_initiator="policy",
+                participant_id=study_context.participant_id,
+                study_run_id=study_context.study_run_id,
+                study_task_id=study_context.study_task_id,
+                autonomy_mode=study_context.autonomy_mode,
             )
             feedback.note_decision(
                 plan_decision == "approve",
@@ -241,6 +262,8 @@ def _resolve_intent_declaration(
         next_phase=declared_phase,
         show_system_prompt=show_system_prompt,
         feedback=feedback,
+        autonomy_mode=study_context.autonomy_mode or "balanced",
+        spec_digest=spec_context.digest if spec_context else None,
     )
     return _IntentResolution(
         declaration=declaration,
@@ -256,6 +279,7 @@ def _record_declare_stage(
     run_session_id: str,
     task: str,
     declaration: IntentDeclaration,
+    study_context: StudyContext,
 ) -> None:
     planned_files = declaration.planned_files
     trust_db.record_decision(
@@ -295,6 +319,7 @@ def _record_declare_stage(
         diff_sizes=declare_diff_sizes,
         blast_radius=len(planned_files),
         existing_leases=declare_leases,
+        study_context=study_context,
     )
 
 
@@ -311,10 +336,33 @@ def run(
         "--show-system-prompt",
         help="Display the dynamic system prompt at session start and phase transitions.",
     ),
+    spec: str | None = typer.Option(
+        None,
+        "--spec",
+        help="Optional spec artifact to align the plan and implementation against.",
+    ),
     permanent_threshold: int | None = typer.Option(
         None,
         "--permanent-threshold",
         help="Approvals required before offering permanent permission.",
+    ),
+    participant_id: str | None = typer.Option(
+        None,
+        "--participant-id",
+        envvar="SC_PARTICIPANT_ID",
+        help="Optional study participant identifier.",
+    ),
+    study_run_id: str | None = typer.Option(
+        None,
+        "--study-run-id",
+        envvar="SC_STUDY_RUN_ID",
+        help="Optional study run identifier.",
+    ),
+    task_id: str | None = typer.Option(
+        None,
+        "--task-id",
+        envvar="SC_TASK_ID",
+        help="Optional study task identifier.",
     ),
 ):
     """Run the agent with intent gating and patch approval."""
@@ -338,23 +386,42 @@ def run(
 
     trust_db = TrustDB(config_dir(repo_root) / "trust.db")
     repo_root_str = str(repo_root)
+    profile = autonomy_profile(config)
+    study_context = StudyContext(
+        participant_id=participant_id,
+        study_run_id=study_run_id,
+        study_task_id=task_id,
+        autonomy_mode=profile.mode,
+    )
+    trace_count = trust_db.trace_count(repo_root_str)
+    constraints = trust_db.list_constraints(repo_root_str)
+    guidelines = trust_db.list_behavioral_guidelines(repo_root_str)
+    history_state = "loaded" if trace_count else "cold-start"
     print(
         f"[bold]Session bootstrap[/bold] "
-        f"traces={trust_db.trace_count(repo_root_str)}, "
-        f"constraints={len(trust_db.list_constraints(repo_root_str))}, "
-        f"guidelines={len(trust_db.list_behavioral_guidelines(repo_root_str))}"
+        f"history={history_state}, "
+        f"mode={profile.mode}, "
+        f"constraints={'loaded' if constraints else 'none'}, "
+        f"guidelines={'loaded' if guidelines else 'none'}"
     )
     run_session_id = uuid4().hex
     threshold = permanent_threshold if permanent_threshold is not None else config.permanent_approval_threshold
     client = ClaudeClient(model_id=config.model_id, region=config.aws_region)
     current_phase: WorkflowPhase = "planning"
     feedback = SessionFeedback(current_phase=current_phase)
+    try:
+        spec_context = _load_spec_context(repo_root, spec, config.read_max_chars)
+    except FileNotFoundError as exc:
+        print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
     # take params and init session
     session = ClaudeSession(
         build_run_system_prompt(
             trust_db=trust_db,
             repo_root=repo_root_str,
             workflow_phase=current_phase,
+            autonomy_mode=profile.mode,
+            spec_digest=spec_context.digest if spec_context else None,
         )
     )
     if show_system_prompt:
@@ -372,6 +439,8 @@ def run(
         current_phase=current_phase,
         show_system_prompt=show_system_prompt,
         feedback=feedback,
+        study_context=study_context,
+        spec_context=spec_context,
     )
     declaration = resolution.declaration
     current_phase = resolution.current_phase
@@ -382,6 +451,7 @@ def run(
         run_session_id=run_session_id,
         task=task,
         declaration=declaration,
+        study_context=study_context,
     )
     if show_intent and not resolution.intent_rendered_during_checkpoint:
         _render_intent_summary(declaration)
@@ -413,6 +483,9 @@ def run(
             current_phase=resolution.current_phase,
             show_system_prompt=show_system_prompt,
             feedback=feedback,
+            autonomy_mode=profile.mode,
+            study_context=study_context,
+            spec_context=spec_context,
         )
     except RuntimeError as exc:
         print(f"[red]{exc}[/red]")
@@ -438,10 +511,12 @@ def run(
         feedback=feedback,
         updates=updates,
         touched_files=touched_files,
+        declaration=declaration,
         planned_files=planned_files,
         remember=remember,
         threshold=threshold,
         client=client,
+        study_context=study_context,
     )
 
     if dry_run:

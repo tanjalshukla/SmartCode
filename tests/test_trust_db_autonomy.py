@@ -9,13 +9,17 @@ from sc.trust_db import TrustDB
 
 
 class TrustDBAutonomyTests(unittest.TestCase):
-    def test_learn_autonomy_preferences_from_feedback(self) -> None:
+    def test_merge_autonomy_preferences_from_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = TrustDB(Path(tmpdir) / "trust.db")
             repo = "/tmp/repo"
-            learned = db.learn_autonomy_preferences(
+            learned = db.merge_autonomy_preferences(
                 repo,
-                "Proceed autonomously for low-risk refactors. Only check in for API/signature/schema/security changes.",
+                AutonomyPreferences(
+                    prefer_fewer_checkins=True,
+                    allowed_checkin_topics=("api", "schema", "security", "signature"),
+                    skip_low_risk_plan_checkpoint=True,
+                ),
             )
             self.assertGreaterEqual(len(learned), 1)
             prefs = db.autonomy_preferences(repo)
@@ -47,7 +51,7 @@ class TrustDBAutonomyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             db = TrustDB(Path(tmpdir) / "trust.db")
             repo = "/tmp/repo"
-            db.learn_autonomy_preferences(repo, "Proceed autonomously for low-risk changes.")
+            db.merge_autonomy_preferences(repo, AutonomyPreferences(prefer_fewer_checkins=True))
             self.assertTrue(db.autonomy_preferences(repo).prefer_fewer_checkins)
             removed = db.delete_autonomy_preferences(repo)
             self.assertEqual(removed, 1)
@@ -76,6 +80,10 @@ class TrustDBAutonomyTests(unittest.TestCase):
                 policy_score=1.0,
                 user_decision="approve",
                 verification_passed=True,
+                participant_id="p1",
+                study_run_id="run-1",
+                study_task_id="task-a",
+                autonomy_mode="balanced",
             )
             db.record_trace(
                 repo_root=repo,
@@ -95,6 +103,10 @@ class TrustDBAutonomyTests(unittest.TestCase):
                 policy_score=0.8,
                 user_decision="approve",
                 verification_passed=False,
+                participant_id="p1",
+                study_run_id="run-1",
+                study_task_id="task-a",
+                autonomy_mode="balanced",
             )
             db.record_trace(
                 repo_root=repo,
@@ -115,6 +127,10 @@ class TrustDBAutonomyTests(unittest.TestCase):
                 user_decision="approve",
                 model_confidence_self_report=0.25,
                 check_in_initiator="model_proactive",
+                participant_id="p1",
+                study_run_id="run-1",
+                study_task_id="task-a",
+                autonomy_mode="balanced",
             )
 
             failure_rate = db.verification_failure_rate(repo, "demo/feature.py")
@@ -123,6 +139,12 @@ class TrustDBAutonomyTests(unittest.TestCase):
             self.assertEqual(confidence.samples, 1)
             assert confidence.average is not None
             self.assertAlmostEqual(confidence.average, 0.25, places=2)
+            self.assertEqual(db.latest_session_id(repo), "s3")
+            session_rows = db.session_traces(repo, "s1")
+            self.assertEqual(session_rows[0]["participant_id"], "p1")
+            self.assertEqual(session_rows[0]["study_run_id"], "run-1")
+            self.assertEqual(session_rows[0]["study_task_id"], "task-a")
+            self.assertEqual(session_rows[0]["autonomy_mode"], "balanced")
 
 
 if __name__ == "__main__":

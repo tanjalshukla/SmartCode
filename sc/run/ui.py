@@ -2,6 +2,8 @@ from __future__ import annotations
 
 """Terminal-facing prompts and rendering helpers for `sc run`."""
 
+import re
+
 from rich import print
 from rich.prompt import Prompt
 
@@ -63,6 +65,14 @@ def _render_intent_summary(declaration: IntentDeclaration) -> None:
     print(f"Planned actions: {', '.join(declaration.planned_actions) or 'none'}")
     if declaration.notes:
         print(f"Plan: {declaration.notes}")
+    if declaration.expected_change_types:
+        print(f"Expected change types: {', '.join(declaration.expected_change_types)}")
+    if declaration.requirements_covered:
+        print("Requirements covered:")
+        _render_file_list(declaration.requirements_covered)
+    if declaration.potential_deviations:
+        print("Potential deviations:")
+        _render_file_list(declaration.potential_deviations)
     print("Planned files:")
     _render_file_list(declaration.planned_files)
 
@@ -92,10 +102,10 @@ def _prompt_plan_checkpoint(
 
 
 def _prompt_permanent(files: list[str]) -> bool:
-    print("\n[bold]Grant indefinite permission?[/bold]")
-    print("These files have been approved repeatedly:")
+    print("\n[bold]Grant permanent access?[/bold]")
+    print("You've approved these files multiple times:")
     _render_file_list(files)
-    response = Prompt.ask("Allow auto-apply for future changes (y/n)", choices=["y", "n"], default="n")
+    response = Prompt.ask("Always approve changes to these files? (y/n)", choices=["y", "n"], default="n")
     return response == "y"
 
 
@@ -119,10 +129,48 @@ def _confirm_create_files(missing_files: list[str]) -> bool:
 
 _ACTION_LABELS: dict[str, str] = {
     "deny": "denied",
-    "check_in": "check-in required",
-    "proceed": "auto-approved",
-    "proceed_flag": "auto-approved (flagged)",
+    "check_in": "needs approval",
+    "proceed": "approved",
+    "proceed_flag": "approved (flagged)",
 }
+
+_APPROVALS_RE = re.compile(r"([\d.]+)\s*weighted approvals")
+
+
+def _user_friendly_reason(policy: PolicyDecision) -> str:
+    """Translate the primary policy reason into plain language."""
+    if not policy.reasons:
+        return ""
+    first = policy.reasons[0]
+    if first.startswith("hard constraint: always_deny"):
+        return "blocked by your rule"
+    if first.startswith("hard constraint: always_check_in"):
+        return "your rule: always check in"
+    if first.startswith("hard constraint: always_allow"):
+        return "your rule: always allow"
+    if "active write lease" in first or "active read lease" in first:
+        return "permanent access granted"
+    if first.startswith("adaptive policy disabled"):
+        return "policy disabled"
+    match = _APPROVALS_RE.search(first)
+    if match:
+        count = int(float(match.group(1)))
+        return f"approved {count} times before" if count else "no prior approvals"
+    if policy.action == "check_in" and policy.score == 0.0:
+        return "first time accessing this file"
+    for reason in policy.reasons:
+        if "-risk:new file" in reason:
+            return "new file"
+        if "-risk:security sensitive" in reason:
+            return "security-sensitive file"
+        if "-risk:large diff" in reason:
+            return "large change"
+        if "-risk:interface change" in reason:
+            return "API/interface change"
+    for reason in policy.reasons:
+        if "-risk:multi-file blast radius" in reason or "-risk:large multi-file action" in reason:
+            return "affects multiple files"
+    return ""
 
 
 def _render_policy_snapshot(
@@ -140,9 +188,51 @@ def _render_policy_snapshot(
         if policy is None:
             continue
         label = _ACTION_LABELS.get(policy.action, policy.action)
-        print(f"  {path}  →  {label}")
+        reason = _user_friendly_reason(policy)
+        if reason:
+            print(f"  {path}  →  {label} ({reason})")
+        else:
+            print(f"  {path}  →  {label}")
 
 
 def _show_system_prompt(phase: WorkflowPhase, prompt_text: str) -> None:
     print(f"\n[bold]System prompt ({phase})[/bold]")
     print(prompt_text)
+
+
+def _render_autonomy_rationale(stage: str, rationale: str | None) -> None:
+    if not rationale:
+        return
+    print(f"[dim]Autonomy rationale ({stage}): {rationale}[/dim]")
+
+
+def _summarize_autonomy_rationale(
+    *,
+    files: list[str],
+    policies: dict[str, PolicyDecision],
+    milestone_reasons: tuple[str, ...] = (),
+) -> str | None:
+    if milestone_reasons:
+        return "; ".join(milestone_reasons[:2])
+    if not files:
+        return None
+    checkin_reasons = []
+    auto_reasons = []
+    for path in files:
+        policy = policies.get(path)
+        if policy is None:
+            continue
+        reason = _user_friendly_reason(policy)
+        if not reason:
+            continue
+        if policy.action == "check_in":
+            checkin_reasons.append(reason)
+        else:
+            auto_reasons.append(reason)
+    reasons = checkin_reasons or auto_reasons
+    if not reasons:
+        return None
+    unique = list(dict.fromkeys(reasons))
+    if len(unique) == 1:
+        return unique[0]
+    return ", ".join(unique[:2])

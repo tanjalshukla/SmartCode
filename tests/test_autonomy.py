@@ -6,22 +6,10 @@ from sc.autonomy import (
     AutonomyPreferences,
     adjusted_policy_thresholds,
     preferences_from_model_payload,
-    update_preferences_from_feedback,
 )
 
 
 class AutonomyPreferenceTests(unittest.TestCase):
-    def test_parse_explicit_checkin_scope_feedback(self) -> None:
-        feedback = (
-            "For low-risk refactors, proceed autonomously without check-ins. "
-            "Only check in for API/signature/schema/security changes."
-        )
-        updated, learned = update_preferences_from_feedback(AutonomyPreferences(), feedback)
-        self.assertTrue(updated.prefer_fewer_checkins)
-        self.assertEqual(updated.allowed_checkin_topics, ("api", "schema", "security", "signature"))
-        self.assertTrue(updated.skip_low_risk_plan_checkpoint)
-        self.assertGreaterEqual(len(learned), 1)
-
     def test_adjusted_thresholds_when_prefers_fewer_checkins(self) -> None:
         prefs = AutonomyPreferences(prefer_fewer_checkins=True)
         proceed, flag = adjusted_policy_thresholds(0.9, 0.2, prefs)
@@ -82,24 +70,6 @@ class AutonomyPreferenceTests(unittest.TestCase):
         self.assertLess(flag_src, 0.2)
         self.assertEqual(proceed_overlap, 0.9)
         self.assertEqual(flag_overlap, 0.2)
-
-    def test_casual_feedback_triggers_prefer_fewer(self) -> None:
-        casual_phrases = [
-            "just do it",
-            "stop asking me",
-            "go ahead",
-            "you decide",
-            "I don't care",
-            "do whatever",
-            "leave me alone",
-        ]
-        for phrase in casual_phrases:
-            updated, learned = update_preferences_from_feedback(AutonomyPreferences(), phrase)
-            self.assertTrue(updated.prefer_fewer_checkins, f"Failed for: {phrase!r}")
-
-    def test_unrelated_feedback_does_not_trigger_prefer_fewer(self) -> None:
-        updated, _ = update_preferences_from_feedback(AutonomyPreferences(), "use tabs instead of spaces")
-        self.assertFalse(updated.prefer_fewer_checkins)
 
     def test_adjusted_thresholds_never_go_below_floor(self) -> None:
         prefs = AutonomyPreferences(prefer_fewer_checkins=True)

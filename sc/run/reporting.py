@@ -49,6 +49,7 @@ def _render_run_summary(
         }
     )
     print("\n[bold]Run summary[/bold]")
+    print(f"Session id={session_id}")
     print(
         f"Actions={total}, check-ins={check_ins}, auto-approved={auto_approved}, "
         f"denied={denied}, revisions={revisions}"

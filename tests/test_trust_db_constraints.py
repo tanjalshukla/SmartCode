@@ -45,6 +45,31 @@ class TrustDBConstraintTests(unittest.TestCase):
             self.assertEqual(len(matched), 1)
             self.assertEqual(matched[0].constraint_type, "always_check_in")
 
+    def test_split_read_write_constraint_picks_policy_by_access_type(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "trust.db"
+            db = TrustDB(db_path)
+            repo = "/tmp/repo"
+            db.replace_constraints(
+                repo_root=repo,
+                source="AGENTS.md",
+                constraints=[
+                    HardConstraint(
+                        path_pattern="src/frontend/*",
+                        source="AGENTS.md",
+                        overridable=False,
+                        read_policy="always_allow",
+                        write_policy="always_check_in",
+                    )
+                ],
+            )
+            read_constraint = db.strongest_constraint(repo, "src/frontend/app.css", access_type="read")
+            write_constraint = db.strongest_constraint(repo, "src/frontend/app.css", access_type="write")
+            assert read_constraint is not None
+            assert write_constraint is not None
+            self.assertEqual(read_constraint.policy_for("read"), "always_allow")
+            self.assertEqual(write_constraint.policy_for("write"), "always_check_in")
+
     def test_replace_and_list_behavioral_guidelines(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "trust.db"

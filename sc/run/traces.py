@@ -5,6 +5,7 @@ from __future__ import annotations
 from ..policy import PolicyDecision
 from ..trust_db import PolicyHistory, TrustDB
 from ..verification import VerificationResult
+from .helpers import StudyContext
 
 
 def _record_traces(
@@ -29,6 +30,7 @@ def _record_traces(
     model_confidence_by_file: dict[str, float | None] | None = None,
     model_assumptions_by_file: dict[str, list[str] | None] | None = None,
     check_in_initiators: dict[str, str | None] | None = None,
+    study_context: StudyContext | None = None,
 ) -> None:
     for path in files:
         history = histories[path]
@@ -72,6 +74,10 @@ def _record_traces(
             model_confidence_self_report=model_confidence,
             model_assumptions=model_assumptions,
             check_in_initiator=initiator,
+            participant_id=study_context.participant_id if study_context else None,
+            study_run_id=study_context.study_run_id if study_context else None,
+            study_task_id=study_context.study_task_id if study_context else None,
+            autonomy_mode=study_context.autonomy_mode if study_context else None,
         )
 
 

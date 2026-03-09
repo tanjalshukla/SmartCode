@@ -77,6 +77,7 @@ class PromptBuilderTests(unittest.TestCase):
                 trust_db=db,
                 repo_root=repo,
                 workflow_phase="implementation",
+                spec_digest="SPEC.md (sha256 deadbeef)\nRequirement: preserve API compatibility.",
             )
 
             self.assertIn("High-trust areas:", prompt)
@@ -91,6 +92,8 @@ class PromptBuilderTests(unittest.TestCase):
             self.assertIn("return a CheckInMessage JSON", prompt)
             self.assertIn("Recent qualitative guidance:", prompt)
             self.assertIn("Use existing auth adapter", prompt)
+            self.assertIn("Approved specification context:", prompt)
+            self.assertIn("preserve API compatibility", prompt)
 
 
 if __name__ == "__main__":

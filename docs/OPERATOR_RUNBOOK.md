@@ -22,9 +22,8 @@ AWS_PROFILE=dev python -m sc doctor --model-id <inference-profile-arn> --region 
 git restore demo/checkin/service.py demo/feature.py demo/docs/notes.md
 python -m sc rules constraints-clear --all
 python -m sc rules guidelines-clear --all
-python -m sc observe revoke --all
-python -m sc observe preferences-clear --yes
-python -m sc config set-threshold 1
+python -m sc observe reset-study-state --yes
+python -m sc config set-mode balanced
 python -m sc config set-verification-cmd ".venv/bin/python -m py_compile demo/feature.py demo/checkin/service.py"
 python -m sc rules import demo/DEMO_RULES.md
 ```
@@ -74,19 +73,17 @@ Fix:
 
 ## 5) Lab Study Hygiene
 
-- Start each participant with cleared leases/preferences (`revoke --all`, `preferences-clear --yes`).
+- Start each participant from a deterministic baseline with `python -m sc observe reset-study-state --yes`.
 - Keep the same verification command across sessions.
 - Export traces after each session:
 
 ```bash
-python -m sc observe traces --limit 500 --json > traces_session.json
-python -m sc observe report --json > report_session.json
+python -m sc observe export --out .sc/exports
 ```
 
 ## 6) Post-Session Reset
 
 ```bash
 git restore demo/checkin/service.py demo/feature.py demo/docs/notes.md
-python -m sc observe revoke --all
-python -m sc observe preferences-clear --yes
+python -m sc observe reset-study-state --yes
 ```

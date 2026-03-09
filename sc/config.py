@@ -4,10 +4,57 @@ import json
 import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 CONFIG_DIR_NAME = ".sc"
 CONFIG_FILE_NAME = "config.json"
+AutonomyMode = Literal["strict", "balanced", "milestone", "autonomous"]
+
+
+@dataclass(frozen=True)
+class AutonomyProfile:
+    mode: AutonomyMode
+    proceed_threshold: float
+    flag_threshold: float
+    strict_plan_gate: bool
+    plan_checkpoint_max_files: int
+
+
+def normalize_autonomy_mode(value: str | None) -> AutonomyMode:
+    normalized = (value or "balanced").strip().lower()
+    if normalized not in {"strict", "balanced", "milestone", "autonomous"}:
+        return "balanced"
+    return normalized  # type: ignore[return-value]
+
+
+def autonomy_profile(config: "SAConfig") -> AutonomyProfile:
+    mode = normalize_autonomy_mode(config.autonomy_mode)
+    proceed = config.policy_proceed_threshold
+    flag = config.policy_flag_threshold
+    strict_plan_gate = config.strict_plan_gate
+    max_files = config.plan_checkpoint_max_files
+
+    if mode == "strict":
+        proceed += 0.25
+        flag += 0.20
+        strict_plan_gate = True
+        max_files = 0
+    elif mode == "milestone":
+        proceed -= 0.10
+        flag -= 0.05
+        max_files = max(max_files, 1)
+    elif mode == "autonomous":
+        proceed -= 0.25
+        flag -= 0.15
+        max_files = max(max_files, 2)
+
+    return AutonomyProfile(
+        mode=mode,
+        proceed_threshold=max(proceed, -0.5),
+        flag_threshold=max(min(flag, proceed), -0.5),
+        strict_plan_gate=strict_plan_gate,
+        plan_checkpoint_max_files=max(max_files, 0),
+    )
 
 
 def default_region() -> str:
@@ -21,6 +68,7 @@ def env_model_id() -> str | None:
 @dataclass
 class SAConfig:
     model_id: str
+    autonomy_mode: AutonomyMode = "balanced"
     aws_region: str = field(default_factory=default_region)
     max_tokens: int = 2500
     temperature: float = 0.0
@@ -43,6 +91,7 @@ class SAConfig:
     def from_dict(cls, data: dict[str, Any]) -> "SAConfig":
         return cls(
             model_id=data["model_id"],
+            autonomy_mode=normalize_autonomy_mode(data.get("autonomy_mode", "balanced")),
             aws_region=data.get("aws_region", default_region()),
             max_tokens=int(data.get("max_tokens", 2500)),
             temperature=float(data.get("temperature", 0.0)),

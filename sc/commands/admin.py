@@ -14,7 +14,14 @@ from ..agent_client import ASK_SYSTEM_PROMPT, ClaudeClient, RUN_SYSTEM_PROMPT
 from ..cli_shared import read_file_context as _read_file_context
 from ..cli_shared import resolve_config as _resolve_config
 from ..commands.shared import open_trust_db, require_repo_root, try_repo_root
-from ..config import SAConfig, default_region, env_model_id, load_config, save_config
+from ..config import (
+    SAConfig,
+    default_region,
+    env_model_id,
+    load_config,
+    normalize_autonomy_mode,
+    save_config,
+)
 from ..constraints import parse_constraints_file
 from ..session import ClaudeSession
 from ..trust_db import HardConstraint
@@ -156,6 +163,27 @@ def set_threshold(
     print(f"[green]Updated permanent_approval_threshold to {threshold}.[/green]")
 
 
+def set_mode(
+    mode: str = typer.Argument(
+        ...,
+        help="Autonomy mode: strict, balanced, milestone, or autonomous.",
+    ),
+):
+    """Set the user-facing autonomy mode in .sc/config.json."""
+    repo_root = require_repo_root()
+    config = load_config(repo_root)
+    if config is None:
+        print("[red]Config not found. Run `sc init` first.[/red]")
+        raise typer.Exit(code=1)
+    normalized = normalize_autonomy_mode(mode)
+    if normalized != mode.strip().lower():
+        print("[yellow]Unknown mode. Use strict, balanced, milestone, or autonomous.[/yellow]")
+        raise typer.Exit(code=1)
+    config.autonomy_mode = normalized
+    save_config(repo_root, config)
+    print(f"[green]Autonomy mode set to {normalized}.[/green]")
+
+
 def set_verification_cmd(
     command: str | None = typer.Argument(
         None,
@@ -227,6 +255,75 @@ def import_rules(
     print(f"[bold]Total behavioral guidelines imported:[/bold] {total_guidelines}")
 
 
+_CONSTRAINT_LABELS: dict[str, str] = {
+    "always_deny": "always deny",
+    "always_check_in": "always check in",
+    "always_allow": "always allow",
+}
+
+
+def _constraint_display(item: HardConstraint) -> str:
+    read_label = _CONSTRAINT_LABELS.get(str(item.read_policy), str(item.read_policy))
+    write_label = _CONSTRAINT_LABELS.get(str(item.write_policy), str(item.write_policy))
+    if item.read_policy == item.write_policy:
+        return read_label
+    return f"read={read_label}; write={write_label}"
+
+
+def rules_list(
+    json_out: bool = typer.Option(False, "--json", help="Output rules as JSON."),
+):
+    """List all rules (file-access constraints and style guidelines)."""
+    repo_root = require_repo_root()
+    trust_db = open_trust_db(repo_root)
+    repo_root_str = str(repo_root)
+    constraints_list = trust_db.list_constraints(repo_root_str)
+    guidelines_list = trust_db.list_behavioral_guidelines(repo_root_str)
+
+    if not constraints_list and not guidelines_list:
+        print("[yellow]No rules found. Use `sc rules import <file>` to add rules.[/yellow]")
+        return
+
+    if json_out:
+        payload = {
+            "rules": [
+                {
+                    "rule": f"{item.path_pattern} → {_constraint_display(item)}",
+                    "enforcement": "enforced",
+                    "source": item.source,
+                }
+                for item in constraints_list
+            ] + [
+                {
+                    "rule": item.guideline,
+                    "enforcement": "best-effort",
+                    "source": item.source,
+                }
+                for item in guidelines_list
+            ],
+        }
+        print(json.dumps(payload, indent=2))
+        return
+
+    table = Table(title="Rules")
+    table.add_column("Rule")
+    table.add_column("Enforcement")
+    table.add_column("Source")
+    for item in constraints_list:
+        table.add_row(
+            f"{item.path_pattern} → {_constraint_display(item)}",
+            "enforced",
+            item.source,
+        )
+    for item in guidelines_list:
+        table.add_row(
+            item.guideline,
+            "best-effort",
+            item.source,
+        )
+    print(table)
+
+
 def constraints(
     json_out: bool = typer.Option(False, "--json", help="Output constraints as JSON."),
 ):
@@ -243,7 +340,8 @@ def constraints(
         payload = [
             {
                 "path_pattern": item.path_pattern,
-                "constraint_type": item.constraint_type,
+                "read_policy": item.read_policy,
+                "write_policy": item.write_policy,
                 "source": item.source,
                 "overridable": item.overridable,
             }
@@ -260,7 +358,7 @@ def constraints(
     for item in constraints_list:
         table.add_row(
             item.path_pattern,
-            item.constraint_type,
+            _constraint_display(item),
             item.source,
             "yes" if item.overridable else "no",
         )

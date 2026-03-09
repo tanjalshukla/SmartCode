@@ -15,11 +15,19 @@ def _bullet_lines(items: list[str], empty: str) -> str:
     return "\n".join(f"- {item}" for item in items[:8])
 
 
+def _constraint_text(read_policy: str | None, write_policy: str | None) -> str:
+    if read_policy == write_policy:
+        return str(read_policy)
+    return f"read={read_policy}, write={write_policy}"
+
+
 def build_run_system_prompt(
     *,
     trust_db: TrustDB,
     repo_root: str,
     workflow_phase: WorkflowPhase,
+    autonomy_mode: str = "balanced",
+    spec_digest: str | None = None,
 ) -> str:
     # pull all context from trust db — each piece maps to a prompt section
     trust_summary = trust_db.trust_summary(repo_root)
@@ -31,7 +39,7 @@ def build_run_system_prompt(
     access_stats = trust_db.access_stats(repo_root, limit=200)
 
     constraint_lines = [
-        f"{item.constraint_type}: {item.path_pattern} (source: {item.source})"
+        f"{_constraint_text(item.read_policy, item.write_policy)}: {item.path_pattern} (source: {item.source})"
         for item in constraints
     ]
     guideline_lines = [item.guideline for item in guidelines]
@@ -85,6 +93,13 @@ def build_run_system_prompt(
             "Current phase is review. Prioritize validation, test outcomes, and concise risk summaries."
         )
 
+    mode_guidance = {
+        "strict": "Developer selected strict autonomy. Bias toward milestone check-ins and explicit approvals on uncertain work.",
+        "balanced": "Developer selected balanced autonomy. Continue routine work, but pause for meaningful risk or design ambiguity.",
+        "milestone": "Developer selected milestone autonomy. Avoid routine interruptions and check in at milestones, pivots, and expensive-to-reverse choices.",
+        "autonomous": "Developer selected autonomous mode. Keep moving on low-risk work and reserve check-ins for security, interfaces, verification failures, or high uncertainty.",
+    }.get(autonomy_mode, "Developer selected balanced autonomy. Continue routine work, but pause for meaningful risk or design ambiguity.")
+
     return (
         "MODE: CODE\n"
         "You are a coding agent operating under strict external governance. "
@@ -104,7 +119,8 @@ def build_run_system_prompt(
         "- Do not ask about routine implementation details or formatting choices.\n"
         f"- Calibration signal: {calibration_line}\n\n"
         "Current workflow guidance:\n"
-        f"{phase_guidance}\n\n"
+        f"{phase_guidance}\n"
+        f"{mode_guidance}\n\n"
         "Observed trust summary (non-numeric):\n"
         "High-trust areas:\n"
         f"{_bullet_lines(trust_summary.high_trust_areas, 'No stable high-trust areas yet.')}\n"
@@ -122,10 +138,13 @@ def build_run_system_prompt(
         f"{_bullet_lines(constraint_lines, 'No hard constraints loaded.')}\n\n"
         "Behavioral guidelines (preferred style):\n"
         f"{_bullet_lines(guideline_lines, 'No behavioral guidelines loaded.')}\n\n"
+        "Approved specification context:\n"
+        f"{_bullet_lines([spec_digest] if spec_digest else [], 'No spec artifact provided for this run.')}\n\n"
         "Safety rules:\n"
         "- planned_files must be minimal and repo-relative.\n"
         "- Never modify files outside approved scope.\n"
         "- Phase gates are enforced by CLI: research blocks all writes; planning allows writes only to .md files.\n"
+        "- If a spec artifact is provided, align plans and changes to it. Surface any expected deviation explicitly.\n"
         "- Minimize unrelated changes; avoid broad refactors unless requested.\n"
         "- Do not include markdown fences in JSON responses."
     ).strip()

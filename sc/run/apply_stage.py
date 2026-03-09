@@ -13,10 +13,11 @@ from rich import print
 
 from ..agent_client import ClaudeClient
 from ..autonomy import adjusted_policy_thresholds
-from ..config import SAConfig
+from ..config import SAConfig, autonomy_profile
 from ..features import classify_change_pattern, estimate_blast_radius, is_security_sensitive
 from ..policy import PolicyDecision, within_scope_budget
 from .helpers import (
+    StudyContext,
     _apply_feedback_learning,
     _collect_change_metrics,
     _constraint_index,
@@ -27,14 +28,81 @@ from .traces import _policy_checkin_initiators, _record_traces
 from .ui import (
     _prompt_approval,
     _prompt_permanent,
+    _render_autonomy_rationale,
     _render_file_list,
     _render_policy_snapshot,
+    _summarize_autonomy_rationale,
 )
 from ..schema import IntentDeclaration
 from ..session import ClaudeSession
 from ..session_feedback import SessionFeedback
 from ..trust_db import PolicyHistory, TrustDB
 from ..verification import run_verification
+
+
+_HIGH_RISK_CHANGE_TYPES = {"api_change", "data_model_change", "config_change", "dependency_update"}
+
+
+def _unexpected_change_types(
+    declaration: IntentDeclaration,
+    actual_change_types: dict[str, str | None],
+) -> tuple[str, ...]:
+    expected = set(declaration.expected_change_types)
+    if not expected:
+        return tuple()
+    unexpected = sorted(
+        {
+            change_type.split(":", 1)[-1]
+            for change_type in actual_change_types.values()
+            if change_type and change_type.split(":", 1)[-1] not in expected
+        }
+    )
+    return tuple(unexpected)
+
+
+def _apply_milestone_reasons(
+    *,
+    declaration: IntentDeclaration,
+    touched_files: list[str],
+    apply_histories: dict[str, PolicyHistory],
+    apply_change_types: dict[str, str | None],
+    verification_failure_rates: dict[str, float | None],
+    mode: str,
+) -> tuple[str, ...]:
+    reasons: list[str] = []
+    first_write_batch = all(
+        history.approvals == 0 and history.denials == 0
+        for history in apply_histories.values()
+    )
+    if first_write_batch and mode in {"strict", "milestone"}:
+        reasons.append("first write batch in this area")
+
+    unexpected = _unexpected_change_types(declaration, apply_change_types)
+    if unexpected:
+        reasons.append(f"implementation deviates from approved change types: {', '.join(unexpected)}")
+
+    if declaration.potential_deviations:
+        reasons.append("plan already flagged possible deviations")
+
+    verification_hotspots = sorted(
+        path for path, rate in verification_failure_rates.items()
+        if rate is not None and rate >= 0.34
+    )
+    if verification_hotspots and mode != "autonomous":
+        preview = ", ".join(verification_hotspots[:2])
+        reasons.append(f"recent verification failures in {preview}")
+
+    high_risk = sorted(
+        {
+            change_type.split(":", 1)[-1]
+            for change_type in apply_change_types.values()
+            if change_type and change_type.split(":", 1)[-1] in _HIGH_RISK_CHANGE_TYPES
+        }
+    )
+    if high_risk and mode == "strict":
+        reasons.append(f"high-risk milestone: {', '.join(high_risk)}")
+
+    return tuple(dict.fromkeys(reasons))
 
 
 def _evaluate_apply_stage(
@@ -49,21 +117,24 @@ def _evaluate_apply_stage(
     feedback: SessionFeedback,
     updates: dict[str, str],
     touched_files: list[str],
+    declaration: IntentDeclaration,
     planned_files: list[str],
     remember: bool,
     threshold: int,
     client: ClaudeClient | None = None,
+    study_context: StudyContext | None = None,
 ) -> None:
     """Resolve apply policy + approval flow and persist decision traces."""
 
     active_apply = trust_db.active_leases(repo_root_str, touched_files)
-    apply_constraints = _constraint_index(trust_db, repo_root_str, touched_files)
+    apply_constraints = _constraint_index(trust_db, repo_root_str, touched_files, access_type="write")
     change_metrics = _collect_change_metrics(repo_root, updates)
     apply_histories: dict[str, PolicyHistory] = {}
     apply_policies: dict[str, PolicyDecision] = {}
     apply_leases: dict[str, str | None] = {}
     apply_change_types: dict[str, str | None] = {}
     apply_diff_sizes: dict[str, int | None] = {}
+    verification_failure_rates: dict[str, float | None] = {}
     denied_apply: list[str] = []
     recent_apply_denials = trust_db.recent_denials(
         repo_root_str,
@@ -73,6 +144,7 @@ def _evaluate_apply_stage(
     )
     autonomy_preferences = trust_db.autonomy_preferences(repo_root_str)
     model_checkin_total, model_checkin_rate = trust_db.model_checkin_calibration(repo_root_str)
+    profile = autonomy_profile(config)
 
     prompt_required = False
     flagged_auto_files: list[str] = []
@@ -97,8 +169,9 @@ def _evaluate_apply_stage(
 
         constraint = apply_constraints.get(path)
         if constraint is not None:
-            apply_leases[path] = constraint.constraint_type
-            if constraint.constraint_type == "always_deny":
+            write_policy = constraint.policy_for("write")
+            apply_leases[path] = write_policy
+            if write_policy == "always_deny":
                 apply_policies[path] = PolicyDecision(
                     action="check_in",
                     score=-1000.0,
@@ -106,7 +179,7 @@ def _evaluate_apply_stage(
                 )
                 denied_apply.append(path)
                 continue
-            if constraint.constraint_type == "always_check_in":
+            if write_policy == "always_check_in":
                 apply_policies[path] = PolicyDecision(
                     action="check_in",
                     score=-500.0,
@@ -114,7 +187,7 @@ def _evaluate_apply_stage(
                 )
                 prompt_required = True
                 continue
-            if constraint.constraint_type == "always_allow":
+            if write_policy == "always_allow":
                 apply_policies[path] = PolicyDecision(
                     action="proceed",
                     score=900.0,
@@ -134,8 +207,8 @@ def _evaluate_apply_stage(
 
         if config.adaptive_policy_enabled:
             proceed_threshold, flag_threshold = adjusted_policy_thresholds(
-                config.policy_proceed_threshold,
-                config.policy_flag_threshold,
+                profile.proceed_threshold,
+                profile.flag_threshold,
                 autonomy_preferences,
                 file_path=path,
                 model_checkin_approval_rate=model_checkin_rate,
@@ -146,6 +219,7 @@ def _evaluate_apply_stage(
                 path,
                 stage="apply",
             )
+            verification_failure_rates[path] = verification_failure_rate
             confidence_stats = trust_db.model_confidence_stats(
                 repo_root_str,
                 file_path=path,
@@ -177,11 +251,30 @@ def _evaluate_apply_stage(
         elif decision.action == "proceed_flag":
             flagged_auto_files.append(path)
 
+    milestone_reasons = _apply_milestone_reasons(
+        declaration=declaration,
+        touched_files=touched_files,
+        apply_histories=apply_histories,
+        apply_change_types=apply_change_types,
+        verification_failure_rates=verification_failure_rates,
+        mode=profile.mode,
+    )
+    if milestone_reasons:
+        prompt_required = True
+
     _render_policy_snapshot(
         stage="apply",
         files=touched_files,
         histories=apply_histories,
         policies=apply_policies,
+    )
+    _render_autonomy_rationale(
+        "apply",
+        _summarize_autonomy_rationale(
+            files=touched_files,
+            policies=apply_policies,
+            milestone_reasons=milestone_reasons,
+        ),
     )
 
     if denied_apply:
@@ -212,6 +305,7 @@ def _evaluate_apply_stage(
             diff_sizes=apply_diff_sizes,
             blast_radius=len(touched_files),
             existing_leases=apply_leases,
+            study_context=study_context,
         )
         feedback.note_decision(False, change_patterns=[item for item in apply_change_types.values() if item])
         raise typer.Exit(code=1)
@@ -220,11 +314,25 @@ def _evaluate_apply_stage(
     remembered = False
     response_time_ms: int | None = None
 
-    # Any required check-in forces a single consolidated user approval prompt.
+    # Split files into those needing check-in vs auto-approved so
+    # the user only sees files that actually need their decision.
     if prompt_required:
-        allow_remember = remember and within_scope_budget(touched_files, config.scope_budget_files)
+        check_in_files = [
+            p for p in touched_files
+            if apply_policies[p].action == "check_in" and p not in denied_apply
+        ]
+        auto_files = [
+            p for p in touched_files
+            if p not in check_in_files and p not in denied_apply
+        ]
+
+        if auto_files:
+            print("\nAlso included (approved automatically):")
+            _render_file_list(auto_files)
+
+        allow_remember = remember and within_scope_budget(check_in_files, config.scope_budget_files)
         prompt_started = time.time()
-        approved, remembered, apply_feedback = _prompt_approval("apply", touched_files, allow_remember)
+        approved, remembered, apply_feedback = _prompt_approval("apply", check_in_files, allow_remember)
         response_time_ms = int((time.time() - prompt_started) * 1000)
         trust_db.record_decision(
             repo_root_str,
@@ -235,6 +343,31 @@ def _evaluate_apply_stage(
             planned_files=planned_files,
             touched_files=touched_files,
         )
+        # Record traces for auto-approved files (outcome depends on user's decision).
+        if auto_files:
+            _record_traces(
+                trust_db=trust_db,
+                repo_root=repo_root_str,
+                session_id=run_session_id,
+                task=task,
+                stage="apply",
+                action_type="write_request",
+                files=auto_files,
+                histories=apply_histories,
+                policies=apply_policies,
+                user_decision="auto_approve" if approved else "deny",
+                response_time_ms=None,
+                change_types=apply_change_types,
+                diff_sizes=apply_diff_sizes,
+                blast_radius=len(touched_files),
+                existing_leases=apply_leases,
+                study_context=study_context,
+            )
+        # Record traces for check-in files with user's actual decision.
+        prompted_decision = (
+            "approve_and_remember" if approved and remembered
+            else ("approve" if approved else "deny")
+        )
         _record_traces(
             trust_db=trust_db,
             repo_root=repo_root_str,
@@ -242,17 +375,18 @@ def _evaluate_apply_stage(
             task=task,
             stage="apply",
             action_type="write_request",
-            files=touched_files,
+            files=check_in_files,
             histories=apply_histories,
             policies=apply_policies,
-            user_decision="approve_and_remember" if approved and remembered else ("approve" if approved else "deny"),
+            user_decision=prompted_decision,
             response_time_ms=response_time_ms,
             change_types=apply_change_types,
             diff_sizes=apply_diff_sizes,
             blast_radius=len(touched_files),
             existing_leases=apply_leases,
             user_feedback_text=apply_feedback,
-            check_in_initiators=_policy_checkin_initiators(touched_files, apply_policies),
+            check_in_initiators=_policy_checkin_initiators(check_in_files, apply_policies),
+            study_context=study_context,
         )
         feedback.note_decision(
             approved,
@@ -274,7 +408,7 @@ def _evaluate_apply_stage(
         if remembered:
             remember_targets = [
                 path
-                for path in touched_files
+                for path in check_in_files
                 if apply_constraints.get(path) is None
             ]
             trust_db.add_leases(
@@ -283,12 +417,13 @@ def _evaluate_apply_stage(
                 ttl_hours=config.lease_ttl_hours,
                 source="user_remember",
             )
+        # Lease offer: only for files that actually needed check-in.
         if remember and threshold > 0:
-            counts = trust_db.approved_apply_counts(repo_root_str, touched_files)
-            active_for_prompt = trust_db.active_leases(repo_root_str, touched_files)
+            counts = trust_db.approved_apply_counts(repo_root_str, check_in_files)
+            active_for_prompt = trust_db.active_leases(repo_root_str, check_in_files)
             eligible = [
                 path
-                for path in touched_files
+                for path in check_in_files
                 if counts.get(path, 0) >= threshold
                 and apply_constraints.get(path) is None
                 and not (path in active_for_prompt and active_for_prompt[path].expires_at is None)
@@ -302,16 +437,15 @@ def _evaluate_apply_stage(
         return
 
     if all(path in active_apply for path in touched_files):
-        print("[green]Apply auto-approved via active leases.[/green]")
+        print("[green]Apply approved.[/green]")
         user_decision = "auto_approve_lease"
     else:
         if flagged_auto_files:
-            print("[yellow]Apply auto-approved with caution.[/yellow]")
-            print("Policy flagged these files for review:")
+            print("[yellow]Apply approved. Flagged for review:[/yellow]")
             _render_file_list(flagged_auto_files)
             user_decision = "auto_approve_flag"
         else:
-            print("[green]Apply auto-approved via adaptive policy.[/green]")
+            print("[green]Apply approved.[/green]")
             user_decision = "auto_approve"
     trust_db.record_decision(
         repo_root_str,
@@ -338,6 +472,7 @@ def _evaluate_apply_stage(
         diff_sizes=apply_diff_sizes,
         blast_radius=len(touched_files),
         existing_leases=apply_leases,
+        study_context=study_context,
     )
     feedback.note_decision(True)
 
@@ -389,6 +524,9 @@ def _apply_updates_and_verify(
             print("[green]Verification passed.[/green]")
         else:
             print("[yellow]Verification reported failures.[/yellow]")
+            print(
+                "[dim]Autonomy rationale (verification): future autonomy will tighten in this area until verification stabilizes.[/dim]"
+            )
             for check in verification_result.checks:
                 if check.passed:
                     continue

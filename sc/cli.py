@@ -13,17 +13,22 @@ from .commands.admin import (
     guidelines_suggest,
     import_rules,
     init,
+    rules_list,
+    set_mode,
     set_threshold,
     set_verification_cmd,
 )
 from .commands.observe import (
     checkin_stats,
+    clear_traces,
     demo_seed,
+    export,
     explain,
     leases,
     preferences,
     preferences_clear,
     report,
+    reset,
     revoke,
     traces,
 )
@@ -34,9 +39,22 @@ from .run.command import run
 app = typer.Typer(add_completion=False)
 
 config_app = typer.Typer(help="Configuration commands.")
-rules_app = typer.Typer(help="Rule import and constraint management.")
+rules_app = typer.Typer(help="Rule management.", invoke_without_command=True)
 observe_app = typer.Typer(help="Observability commands.")
+history_app = typer.Typer(help="Decision history.")
 dev_app = typer.Typer(help="Developer/demo utilities.")
+
+
+def _register_hidden_aliases(root: typer.Typer, aliases: dict[str, object]) -> None:
+    for name, command in aliases.items():
+        root.command(name, hidden=True)(command)
+
+
+@rules_app.callback()
+def _rules_default(ctx: typer.Context):
+    if ctx.invoked_subcommand is None:
+        rules_list(json_out=False)
+
 
 # Compact public surface.
 app.command()(init)
@@ -44,17 +62,28 @@ app.command()(doctor)
 app.command()(ask)
 app.command()(run)
 app.command()(report)
+app.command()(reset)
 
-config_app.command("set-threshold")(set_threshold)
+config_app.command("set-mode")(set_mode)
 config_app.command("set-verification-cmd")(set_verification_cmd)
+config_app.command("set-threshold", hidden=True)(set_threshold)
 
+rules_app.command("list")(rules_list)
 rules_app.command("import")(import_rules)
-rules_app.command("constraints")(constraints)
-rules_app.command("constraints-relax")(constraints_relax)
-rules_app.command("constraints-clear")(constraints_clear)
-rules_app.command("guidelines")(guidelines)
-rules_app.command("guidelines-suggest")(guidelines_suggest)
-rules_app.command("guidelines-clear")(guidelines_clear)
+rules_app.command("clear")(constraints_clear)
+rules_app.command("suggest")(guidelines_suggest)
+# Keep specific subcommands for advanced usage.
+rules_app.command("constraints", hidden=True)(constraints)
+rules_app.command("constraints-relax", hidden=True)(constraints_relax)
+rules_app.command("constraints-clear", hidden=True)(constraints_clear)
+rules_app.command("guidelines", hidden=True)(guidelines)
+rules_app.command("guidelines-suggest", hidden=True)(guidelines_suggest)
+rules_app.command("guidelines-clear", hidden=True)(guidelines_clear)
+
+history_app.command("list")(traces)
+history_app.command("explain")(explain)
+history_app.command("clear")(clear_traces)
+history_app.command("stats")(checkin_stats)
 
 observe_app.command("leases")(leases)
 observe_app.command("traces")(traces)
@@ -62,34 +91,44 @@ observe_app.command("explain")(explain)
 observe_app.command("checkin-stats")(checkin_stats)
 observe_app.command("preferences")(preferences)
 observe_app.command("preferences-clear")(preferences_clear)
+observe_app.command("clear-traces")(clear_traces)
 observe_app.command("report")(report)
 observe_app.command("revoke")(revoke)
+observe_app.command("export")(export)
+observe_app.command("reset-study-state")(reset)
 
 dev_app.command("demo-seed")(demo_seed)
 
 app.add_typer(config_app, name="config")
 app.add_typer(rules_app, name="rules")
+app.add_typer(history_app, name="history", hidden=True)
 app.add_typer(observe_app, name="observe")
-app.add_typer(dev_app, name="dev")
+app.add_typer(dev_app, name="dev", hidden=True)
 
-# Legacy command aliases kept hidden for backward compatibility.
-app.command("start", hidden=True)(run)
-app.command("set-threshold", hidden=True)(set_threshold)
-app.command("set-verification-cmd", hidden=True)(set_verification_cmd)
-app.command("import-rules", hidden=True)(import_rules)
-app.command("import", hidden=True)(import_rules)
-app.command("constraints", hidden=True)(constraints)
-app.command("constraints-relax", hidden=True)(constraints_relax)
-app.command("constraints-clear", hidden=True)(constraints_clear)
-app.command("guidelines", hidden=True)(guidelines)
-app.command("guidelines-suggest", hidden=True)(guidelines_suggest)
-app.command("guidelines-clear", hidden=True)(guidelines_clear)
-app.command("leases", hidden=True)(leases)
-app.command("traces", hidden=True)(traces)
-app.command("history", hidden=True)(traces)
-app.command("explain", hidden=True)(explain)
-app.command("checkin-stats", hidden=True)(checkin_stats)
-app.command("preferences", hidden=True)(preferences)
-app.command("preferences-clear", hidden=True)(preferences_clear)
-app.command("demo-seed", hidden=True)(demo_seed)
-app.command("revoke", hidden=True)(revoke)
+_register_hidden_aliases(
+    app,
+    {
+        "access": leases,
+        "preferences": preferences,
+        "start": run,
+        "set-mode": set_mode,
+        "set-threshold": set_threshold,
+        "set-verification-cmd": set_verification_cmd,
+        "import-rules": import_rules,
+        "import": import_rules,
+        "constraints": constraints,
+        "constraints-relax": constraints_relax,
+        "constraints-clear": constraints_clear,
+        "guidelines": guidelines,
+        "guidelines-suggest": guidelines_suggest,
+        "guidelines-clear": guidelines_clear,
+        "leases": leases,
+        "traces": traces,
+        "explain": explain,
+        "checkin-stats": checkin_stats,
+        "preferences-clear": preferences_clear,
+        "clear-traces": clear_traces,
+        "demo-seed": demo_seed,
+        "revoke": revoke,
+    },
+)

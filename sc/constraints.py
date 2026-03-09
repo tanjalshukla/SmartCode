@@ -38,6 +38,41 @@ _ALLOW_KEYWORDS = (
     "trusted",
     "edit freely",
 )
+_READ_ALLOW_KEYWORDS = (
+    "allow reads",
+    "allow read",
+    "read freely",
+    "read access is allowed",
+    "inspect freely",
+)
+_READ_DENY_KEYWORDS = (
+    "do not read",
+    "don't read",
+    "never read",
+    "must not read",
+)
+_READ_CHECKIN_KEYWORDS = (
+    "check in before reading",
+    "ask before reading",
+    "approval before reading",
+)
+_WRITE_ALLOW_KEYWORDS = (
+    "allow writes",
+    "allow write",
+    "edit freely",
+    "write access is allowed",
+)
+_WRITE_DENY_KEYWORDS = (
+    "do not write",
+    "don't write",
+    "never write",
+    "must not write",
+)
+_WRITE_CHECKIN_KEYWORDS = (
+    "check in before writing",
+    "ask before writing",
+    "approval before writing",
+)
 _GUIDELINE_KEYWORDS = (
     "always ",
     "do not ",
@@ -98,6 +133,30 @@ def _classify_constraint_type(line_lower: str) -> str | None:
     return None
 
 
+def _classify_split_policies(line_lower: str) -> tuple[str | None, str | None] | None:
+    if "read" not in line_lower and "write" not in line_lower:
+        return None
+
+    def _policy(
+        allow_keywords: tuple[str, ...],
+        deny_keywords: tuple[str, ...],
+        checkin_keywords: tuple[str, ...],
+    ) -> str | None:
+        if any(keyword in line_lower for keyword in deny_keywords):
+            return "always_deny"
+        if any(keyword in line_lower for keyword in checkin_keywords):
+            return "always_check_in"
+        if any(keyword in line_lower for keyword in allow_keywords):
+            return "always_allow"
+        return None
+
+    read_policy = _policy(_READ_ALLOW_KEYWORDS, _READ_DENY_KEYWORDS, _READ_CHECKIN_KEYWORDS)
+    write_policy = _policy(_WRITE_ALLOW_KEYWORDS, _WRITE_DENY_KEYWORDS, _WRITE_CHECKIN_KEYWORDS)
+    if read_policy is None and write_policy is None:
+        return None
+    return read_policy, write_policy
+
+
 def _looks_like_guideline(line_lower: str) -> bool:
     return any(keyword in line_lower for keyword in _GUIDELINE_KEYWORDS)
 
@@ -121,6 +180,26 @@ def parse_constraints_from_text(text: str, source: str) -> ParseResult:
             continue
 
         line_lower = line.lower()
+        split_policies = _classify_split_policies(line_lower)
+        if split_policies is not None:
+            paths = _extract_path_tokens(line)
+            if not paths:
+                guidelines.append(line)
+                unresolved.append(line)
+                continue
+            read_policy, write_policy = split_policies
+            for path in paths:
+                constraints.append(
+                    HardConstraint(
+                        path_pattern=path,
+                        source=source,
+                        overridable=False,
+                        read_policy=read_policy,
+                        write_policy=write_policy,
+                    )
+                )
+            continue
+
         constraint_type = _classify_constraint_type(line_lower)
         if constraint_type is None:
             if _looks_like_guideline(line_lower):
@@ -135,7 +214,7 @@ def parse_constraints_from_text(text: str, source: str) -> ParseResult:
 
         for path in paths:
             constraints.append(
-                HardConstraint(
+                HardConstraint.for_both(
                     path_pattern=path,
                     constraint_type=constraint_type,
                     source=source,
@@ -143,9 +222,9 @@ def parse_constraints_from_text(text: str, source: str) -> ParseResult:
                 )
             )
 
-    unique: dict[tuple[str, str, str], HardConstraint] = {}
+    unique: dict[tuple[str, str, str, str], HardConstraint] = {}
     for item in constraints:
-        key = (item.path_pattern, item.constraint_type, item.source)
+        key = (item.path_pattern, str(item.read_policy), str(item.write_policy), item.source)
         unique[key] = item
     return ParseResult(
         constraints=list(unique.values()),

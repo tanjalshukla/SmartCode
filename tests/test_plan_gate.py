@@ -188,6 +188,50 @@ class PlanGateTests(unittest.TestCase):
             self.assertTrue(decision.required)
             self.assertTrue(any("high import count" in reason for reason in decision.reasons))
 
+    def test_spec_without_requirement_mapping_requires_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = TrustDB(Path(tmpdir) / "trust.db")
+            declaration = IntentDeclaration(
+                task_summary="Implement feature from spec",
+                planned_files=["demo/feature.py"],
+                planned_actions=["edit_code"],
+                planned_commands=[],
+                expected_change_types=["general_change"],
+            )
+            decision = decide_plan_checkpoint(
+                trust_db=db,
+                repo_root="/tmp/repo",
+                declaration=declaration,
+                strict=False,
+                max_auto_files=1,
+                spec_required=True,
+            )
+            self.assertTrue(decision.required)
+            self.assertTrue(any("spec provided" in reason for reason in decision.reasons))
+
+    def test_potential_deviations_require_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = TrustDB(Path(tmpdir) / "trust.db")
+            declaration = IntentDeclaration(
+                task_summary="Implement feature from spec",
+                planned_files=["demo/feature.py"],
+                planned_actions=["edit_code"],
+                planned_commands=[],
+                expected_change_types=["general_change"],
+                requirements_covered=["Req-1"],
+                potential_deviations=["Might need a schema tweak if current API is inconsistent."],
+            )
+            decision = decide_plan_checkpoint(
+                trust_db=db,
+                repo_root="/tmp/repo",
+                declaration=declaration,
+                strict=False,
+                max_auto_files=1,
+                spec_required=True,
+            )
+            self.assertTrue(decision.required)
+            self.assertTrue(any("anticipates possible deviations" in reason for reason in decision.reasons))
+
 
 if __name__ == "__main__":
     unittest.main()

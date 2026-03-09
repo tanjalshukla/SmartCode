@@ -1,172 +1,14 @@
 # AdaptiveAuth
 
-## What this is
-
-## Implementation status (current prototype)
-
-Legend: [implemented], [partial], [not implemented]
-
-- [implemented] Core governance loop (`sc run`/`sc start`) with untrusted-model enforcement.
-- [implemented] Two-sided check-ins (CLI policy + model-proactive) with `check_in_initiator` tracing.
-- [implemented] Dynamic prompt context from trust summary, constraints, guidelines, and recent feedback.
-- [implemented] Plan checkpoint gate with revise/deny loop and persisted plan revision events.
-- [implemented] Heuristic adaptive policy with review-duration/rubber-stamp quality weighting.
-- [implemented] End-of-run summary + guideline suggestion flow + observability (`traces`, `explain`, `report`).
-- [implemented] Rule import (`import-rules` / `import`) into hard constraints + behavioral guidelines.
-- [partial] Pair mode implemented; async mode flag exists but runtime supports pair only.
-- [partial] Data model partially matches this spec; implementation uses `decision_traces`-centric schema.
-- [partial] Agent protocol is structured JSON but simpler than full target protocol in this document.
-- [not implemented] Training/inference (`policy train/eval`) not implemented yet.
-- [not implemented] Full async delegation queue (`status`/`review`) not implemented yet.
-- [not implemented] Full drift detection/takeover detection loops not implemented yet.
-- [not implemented] Interaction-style cold-start prior (CowCorpus archetypes) not yet operationalized.
-- [not implemented] Reversibility (`is_reversible`) is not yet a first-class policy feature.
-- [not implemented] Positive handoff interrupts vs corrective interrupts are not yet separated in runtime scoring.
-- [not implemented] Research-phase markdown writebacks (notes/findings) are not currently allowed by phase gate.
-- [not implemented] Review-phase learning of blocking vs ignorable failures is not explicitly modeled yet.
-
-### Explicit gaps tracked for next iteration (not implemented)
-
-1. **Interaction-style cold start prior (CowCorpus paper)**
-   - Add a `user_profile` (or `sessions.interaction_style`) field:
-     - `hands_off` | `hands_on` | `collaborative` | `takeover`
-   - Classify early using first 3-5 sessions from:
-     - interrupt frequency
-     - review duration
-     - edit distance / correction rate
-   - Use style as a prior for heuristic thresholds before enough traces accumulate.
-
-2. **Reversibility as first-class risk signal (McCain)**
-   - Add `is_reversible` to ActionContext + traces.
-   - Score irreversible actions with an explicit penalty separate from blast radius.
-   - Keep reversibility orthogonal to code-diff size and dependency impact.
-
-3. **Interrupt taxonomy in outcomes (McCain)**
-   - Extend `user_response` with:
-     - `partial_approve`
-     - `user_takeover`
-   - Add `interrupt_reason`:
-     - `correction` | `takeover` | `redirect` | `excessive_execution` | `sufficient_progress`
-   - Update trust scoring so takeover/sufficient-progress interrupts are neutral or positive, not denials.
-
-4. **Research-phase markdown findings writeback**
-   - Current gate blocks all writes during research.
-   - Add controlled write policy for `.md` findings/plan artifacts in research.
-   - Keep non-markdown writes blocked.
-
-5. **Review-phase failure preference learning**
-   - Track developer treatment of failing checks (`blocking` vs `ignorable`).
-   - Persist this signal in traces and surface it in trust/prompt context.
-   - Use it in policy decisions during review/test stages.
-
-6. **Structured plan rendering with code previews (survey feedback)**
-   - Render plans as structured markdown with section headers, file-level summaries, and inline code samples showing what will change.
-   - Display via Rich markdown rendering in the terminal so large plans are scannable.
-   - Goal: by the time the developer approves a plan, there is minimal ambiguity about what the agent will produce.
-   - Requires extending `IntentDeclaration` or adding a plan preview stage between intent and generation.
-
-## Project Overview
-
 A CLI governance layer between a developer and an LLM coding agent. It learns when to pause and ask the developer vs. when to proceed autonomously, adapting over time to each developer's implicit preferences.
 
 The model is untrusted. It proposes actions; the CLI enforces all reads, writes, and check-ins. Trust is built from interaction traces — approval history, correction patterns, review timing — not from the model's self-assessment. The model participates in oversight by reasoning about its own uncertainty and surfacing architectural decisions, but the CLI makes the final call.
 
-This targets skilled engineers who plan, supervise, and validate. Not really as a vibe-coding tool. The goal: supervision gets more efficient over time because the system learns what this particular developer actually cares about.
+This targets skilled engineers who plan, supervise, and validate. The goal: supervision gets more efficient over time because the system learns what this particular developer actually cares about.
 
-## Why this matters
+---
 
-Current tools offer binary autonomy: ask before every edit, or edit automatically. Static config files (CLAUDE.md, .cursorrules) capture preferences the developer can articulate in advance, but most preferences are implicit — they show up as correction patterns, review timing, edit distance, and phase-of-work context. Nobody writes "check in on error handling but not test generation" in a config file, but that preference is clearly visible in interaction traces.
-
-Anthropic's study of millions of agent interactions (McCain et al., Feb 2026) found that agents are far more capable than their deployment patterns suggest. METR estimates Claude handles ~5-hour tasks, but real-world turn duration caps around 42 minutes. The gap isn't capability, it's trust infrastructure. Experienced developers shift from per-action approval to monitoring + targeted intervention (auto-approve rises from 20% to 40%+), and agent-initiated stops are more common than human interruptions on complex tasks. The top reason Claude self-stops is to present approach choices (35%). AdaptiveAuth learns and accelerates this behavioral shift per-developer.
-
-
-## User experience
-
-### Pair mode (implemented)
-
-Interactive. Agent proposes, developer reviews in real-time.
-
-```
-$ aa start --mode pair --task "Refactor payment validation to use new schema"
-
-[AdaptiveAuth] Loaded trust profile: 847 prior interactions
-[AdaptiveAuth] Imported 3 rules from CLAUDE.md
-[AdaptiveAuth] Session started. Agent working...
-
-── Agent Plan ──────────────────────────────────────────────────
-Subtasks:
-  1. Update PaymentValidator.validate()     → CHECK-IN (corrected similar 3x)
-  2. Update test_payment_validation.py      → AUTO (12 approvals, 0 corrections)
-  3. Update PaymentTypes API interface      → FLAG (shared interface, 3 dependents)
-  4. Update API docs                        → AUTO (high trust)
-────────────────────────────────────────────────────────────────
-
-[1/4] PaymentValidator.validate()
-  Restructuring validate() to use SchemaV2.
-  Preserving existing edge case handler for expired cards.
-
-  Checking in because: you've corrected my payment validation
-  changes 3 times in the last 2 weeks.
-
-  [diff preview]
-
-  (a)pprove  (e)dit  (d)eny  (s)kip  > a
-
-[2/4] test_payment_validation.py — auto-approved (12 prior approvals)
-[3/4] PaymentTypes API interface — completed, flagged for summary review
-[4/4] API docs — auto-approved
-
-── Session Summary ─────────────────────────────────────────────
-  2 auto-approved  |  1 check-in (approved)  |  1 flagged
-  Flagged: PaymentTypes interface change affects 3 downstream consumers.
-  View full diff? (y/n) >
-────────────────────────────────────────────────────────────────
-```
-
-### Async mode (not implemented yet)
-
-Developer hands off a task, checks back later.
-
-```
-$ aa start --mode async --task "Add cursor-based pagination to all list endpoints"
-
-[AdaptiveAuth] Agent working in background...
-
-$ aa status
-
-── Task Progress ───────────────────────────────────────────────
-  4/7 subtasks complete, 1 awaiting input, 2 remaining
-
-  ✓ users/list.py          — auto-approved, tests pass
-  ✓ projects/list.py       — auto-approved, tests pass
-  ✓ tasks/list.py          — auto-approved, tests pass
-  ✓ shared/pagination.py   — auto-approved (utility, high trust)
-
-  ⏸ billing/list.py        — AWAITING INPUT
-    "This endpoint has custom rate limiting that interacts with
-     pagination. Two approaches:
-     (A) Paginate first, then rate-limit per page
-     (B) Rate-limit globally, paginate within the limit
-     Checking in because you've corrected my billing changes before."
-
-    (a) Approach A  (b) Approach B  (v)iew diff for each  >
-
-  ○ notifications/list.py  — queued
-  ○ Integration tests       — queued
-
-  Time elapsed: 23 min | Est. remaining: 8 min
-────────────────────────────────────────────────────────────────
-```
-
-### Phase-aware behavior
-
-| Phase | Default | Learns to... |
-|---|---|---|
-| Research | Read freely, write findings to markdown | Which modules need deep vs. shallow reads |
-| Planning | Heavy check-ins, developer annotates iteratively | What the developer always overrides in plans |
-| Implementation | Minimal interruptions, execute approved plan | Which implementation patterns get corrected |
-| Review | Surface results, flag failures | Which test failures are blocking vs. ignorable |
-
+# Part 1: Technical Implementation
 
 ## Architecture
 
@@ -176,8 +18,6 @@ Check-ins come from two independent sources:
 2. **Model system prompt** — the model is told its trust context and instructed to reason about uncertainty. It pauses for architectural decisions, approach tradeoffs, plan deviations. Does not pause for file permissions or routine implementation.
 
 Either side can trigger a check-in independently. Both are logged with `check_in_initiator` so we can learn which source is better calibrated over time.
-
-This visual was generated by Claude Opus 4.6:
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -206,7 +46,7 @@ This visual was generated by Claude Opus 4.6:
 │         │         └──────────────┘                   │
 │         ▼                                            │
 │  ┌──────────────────────────────────────────────┐   │
-│  │   agents.md / CLAUDE.md parser               │   │
+│  │   AGENTS.md / CLAUDE.md parser               │   │
 │  │   (imports static rules as hard constraints) │   │
 │  └──────────────────────────────────────────────┘   │
 │  ┌──────────────────────────────────────────────┐   │
@@ -233,472 +73,442 @@ This visual was generated by Claude Opus 4.6:
 └─────────────────────────────────────────────────────┘
 ```
 
-### The trace → prompt feedback loop
+## 4-Stage Pipeline
 
-This is the core mechanism. Every developer interaction produces a trace. Traces accumulate into trust scores, correction patterns, and behavioral guidelines. These are queried at session start (and at phase transitions) to build the system prompt the model receives. The model then uses that context to reason about when to check in. This is a hueristic guess until we run user-studies or get survey results to learn implicit/explicit preferences.
+Every task flows through:
 
-Concretely: the developer corrects the agent's error handling in session 3. That correction is logged as a trace with `change_pattern = "error_handling"`, `user_response = "approve_with_edits"`, `user_feedback = "Use AppError with error codes"`. The trust score for error_handling drops. In session 4, when the prompt builder runs, it does two things:
+1. **Intent declaration** (`run/command.py`) — model produces a structured plan listing files to read and modify.
+2. **Read stage** (`run/read_stage.py`) — each read request goes through the approval cascade. Approved files are loaded into context.
+3. **Generate updates** (`run/model.py`) — model generates code changes. Can initiate proactive check-ins during generation.
+4. **Apply + verify** (`run/apply_stage.py`) — each write goes through the approval cascade. Approved writes use atomic two-phase file writes (temp + `os.replace`). Verification runs post-write.
 
-1. **Trust summary** (from `trust_scores` table): the model sees "Low-trust areas: error_handling patterns — the developer has corrected you here before." This is vague on purpose to avoid hacking, no numeric scores, just enough for the model to reason about its own uncertainty.
-2. **Recent corrections** (from `traces` table, last 5 corrections): the model sees "error_handling in src/api/handler.py — Developer said: Use AppError with error codes." This is specific and actionable.
+## Approval Cascade
 
-The model now has two signals pushing it toward caution on error handling: a vague trust warning and a concrete correction with the developer's own words. When it encounters an error handling decision in session 4, it's more likely to proactively check in — not because the CLI forced it, but because the prompt gave it reasons to be uncertain.
+For every file access, evaluated in order:
 
-Meanwhile, the CLI policy engine independently sees the lower trust score for error_handling and may force a check-in anyway. Both sides arrive at the same conclusion through different paths. The traces log which side triggered the check-in (`check_in_initiator`), so over time we learn whether the model's self-assessment or the CLI's score-based policy is better calibrated for this developer.
+1. **Hard constraints** — permanent rules (always_deny, always_check_in, always_allow). Override everything.
+2. **Active leases** — temporary trust grants from prior approvals. Auto-approve for the session.
+3. **Adaptive policy** (`policy.py`) — computes a score from weighted signals, compared against thresholds.
+4. **Threshold adaptation** (`autonomy.py`) — thresholds shift based on learned preferences and check-in calibration.
 
-After 3+ corrections on the same pattern, the system suggests a behavioral guideline. If the developer accepts "Use AppError with error codes, not generic Error", that guideline goes into the prompt as a standing instruction — not just a trust warning, but a directive. The model stops checking in on error handling (trust rebuilds from approvals) and instead just follows the guideline. The developer's correction overhead drops to zero for that pattern.
+## Policy Engine
 
-This is the full cycle: **traces → trust scores → prompt context → model reasoning → check-in decisions → developer response → traces**. The model doesn't learn through ML-techniques, it receives progressively better context each session and reasons over it. The actual learning happens in the trust DB and the guideline table, outside the model.
+Heuristic scoring from `policy.py`. All weights are initial guesses — lab studies will produce data to replace them with learned values.
 
+**Signals and weights (actual implementation):**
 
-## Data model (SQLite) — target schema (partially implemented)
+| Category | Signal | Weight | Notes |
+|----------|--------|--------|-------|
+| History | Prior approvals (rubber-stamp-discounted) | +0.4 per | Rubber-stamps <5s count as 0.5x |
+| History | Prior denials | -0.7 per | |
+| History | Deliberate review pace (>15s) | +0.15 | |
+| History | High edit distance | -0.5 max | Developer heavily corrects output |
+| Risk | Large diff (>80 lines) | -0.8 | |
+| Risk | Medium diff (>30 lines) | -0.4 | |
+| Risk | Blast radius >3 files | -0.8 | |
+| Risk | Large multi-file action (>4) | -0.9 | |
+| Risk | Multi-file action (>1) | -0.35 | |
+| Risk | New file | -0.6 | |
+| Risk | Security sensitive | -2.0 | Path/content keyword detection |
+| Risk | API/data model change | -0.8 | |
+| Risk | Config change | -0.4 | |
+| Risk | Dependency update | -0.5 | |
+| Risk | Test/documentation | +0.3 | Low impact |
+| Risk | Error handling | +0.1 | Usually localized |
+| Session | Recent denials | -0.7 per (max 3) | |
+| Quality | Verification failure rate >30% | -0.6 | From trace history |
+| Quality | Low model confidence (<0.40, 3+ samples) | -0.3 | From trace history |
 
-```sql
-CREATE TABLE hard_constraints (
-    id INTEGER PRIMARY KEY,
-    path_pattern TEXT NOT NULL,          -- glob, e.g. "src/auth/*"
-    constraint_type TEXT NOT NULL,       -- "always_check_in" | "always_deny" | "always_allow"
-    source TEXT NOT NULL,                -- "agents_md" | "user_explicit" | "system"
-    overridable BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+**Internal thresholds (hidden from the normal user UX):**
+- Score >= 0.9 → `proceed` (auto-approve silently)
+- Score >= 0.2 → `proceed_flag` (approve, flag for summary)
+- Score < 0.2 → `check_in` (ask the user)
 
-CREATE TABLE trust_scores (
-    id INTEGER PRIMARY KEY,
-    file_path TEXT NOT NULL,
-    action_type TEXT NOT NULL,           -- "read" | "write" | "create" | "delete" | "refactor"
-    change_pattern TEXT,                 -- "test_generation" | "error_handling" | "api_change" etc.
-    approval_count INTEGER DEFAULT 0,
-    denial_count INTEGER DEFAULT 0,
-    correction_count INTEGER DEFAULT 0,
-    avg_edit_distance REAL DEFAULT 0.0,
-    avg_review_time_ms REAL DEFAULT 0.0,
-    last_interaction TIMESTAMP,
-    trust_score REAL DEFAULT 0.0,
-    UNIQUE(file_path, action_type, change_pattern)
-);
+These numeric thresholds remain implementation details. Lab participants should interact with qualitative autonomy modes and reason strings, not raw scores.
 
-CREATE TABLE leases (
-    id INTEGER PRIMARY KEY,
-    file_path TEXT NOT NULL,
-    action_type TEXT NOT NULL,
-    lease_type TEXT NOT NULL,            -- "permanent" | "session" | "timed"
-    granted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    expires_at TIMESTAMP,
-    grant_reason TEXT,
-    revoked BOOLEAN DEFAULT FALSE,
-    revoked_reason TEXT
-);
+## User-Facing Autonomy Modes
 
-CREATE TABLE traces (
-    id INTEGER PRIMARY KEY,
-    session_id TEXT NOT NULL,
-    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+For lab studies and product UX, the user should control autonomy through one qualitative setting instead of threshold tuning:
 
-    -- Context (policy inputs)
-    file_path TEXT NOT NULL,
-    action_type TEXT NOT NULL,
-    change_pattern TEXT,
-    workflow_phase TEXT,
-    diff_size INTEGER,
-    blast_radius INTEGER,
-    is_reversible BOOLEAN,              -- [not implemented] reversible vs irreversible action
-    is_security_sensitive BOOLEAN,
-    is_shared_interface BOOLEAN,
-    code_complexity_score REAL,
-    file_author TEXT,
+- `strict` — conservative approvals, heavier plan gating, more milestone check-ins.
+- `balanced` — default mode; risk-aware with moderate autonomy.
+- `milestone` — minimize routine interruptions, but always check in at milestone boundaries and meaningful design pivots.
+- `autonomous` — proceed aggressively on low-risk routine work; still stop on hard constraints, security, interface changes, or verification failures.
 
-    -- Trust history at decision time
-    prior_approvals INTEGER,
-    prior_denials INTEGER,
-    prior_corrections INTEGER,
-    current_trust_score REAL,
-    has_active_lease BOOLEAN,
+Modes compile down to internal thresholds and plan-gate behavior. The numeric policy remains active, but it is not part of the normal user-facing API.
 
-    -- Session state
-    session_action_count INTEGER,
-    session_recent_denials INTEGER,
-    session_recent_corrections INTEGER,
-    time_since_last_interaction_ms INTEGER,
+**Threshold adaptation** (`autonomy.py::adjusted_policy_thresholds`):
+- User prefers fewer check-ins → thresholds drop by 0.25 (+ 0.10 if topic-scoped)
+- Model check-in approval rate <40% (5+ samples) → thresholds rise by 0.15
+- Floor clamp at -0.5 to prevent nonsensical values
 
-    -- Policy decision
-    policy_decision TEXT NOT NULL,       -- "check_in" | "auto_approve" | "auto_approve_flag" | "deny"
-    policy_confidence REAL,
+## Preference Learning
 
-    -- Two-sided check-in tracking
-    check_in_initiator TEXT,            -- "cli_policy" | "model_proactive" | "user_interrupt" | "none"
-    model_stated_reason TEXT,
-    model_confidence_self_report REAL,
+When the user gives feedback at any approval point, the text goes to the model via `summarize_autonomy_feedback()` which returns structured JSON. No regex parsing — the model classifies intent into 4 preference fields:
 
-    -- Outcome
-    user_response TEXT,                 -- "approve" | "deny" | "approve_with_edits" | "not_reviewed"
-                                        -- [planned/not implemented] add "partial_approve" | "user_takeover"
-    interrupt_reason TEXT,              -- [not implemented] correction/takeover/redirect/excessive_execution/sufficient_progress
-    user_edit_distance INTEGER,
-    user_response_time_ms INTEGER,
-    review_duration_seconds REAL,       -- wall-clock time from presentation to response
-    review_mode TEXT,                   -- "realtime" | "batch"
-    user_reverted BOOLEAN DEFAULT FALSE,
-    user_feedback TEXT,                 -- developer's correction explanation, injected into next prompt
-    tests_passed_after BOOLEAN,
-    user_corrected_despite_tests BOOLEAN,
-    test_coverage_of_changed REAL,
+- `prefer_fewer_checkins` (boolean)
+- `allowed_checkin_topics` (subset of: api, signature, schema, security, architecture, config, test, deployment)
+- `skip_low_risk_plan_checkpoint` (boolean)
+- `scoped_paths` (file path patterns where preferences apply)
 
-    was_correct_decision BOOLEAN        -- computed post-hoc for evaluation
-);
+Preferences merge additively (OR for booleans, UNION for collections) and persist in SQLite. They directly influence threshold adaptation.
 
-CREATE TABLE behavioral_guidelines (
-    id INTEGER PRIMARY KEY,
-    guideline TEXT NOT NULL,
-    source TEXT NOT NULL,                -- "imported" | "learned" | "user_explicit"
-    source_file TEXT,
-    change_pattern TEXT,
-    confidence REAL DEFAULT 1.0,
-    correction_count INTEGER DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    active BOOLEAN DEFAULT TRUE
-);
+## Behavioral Guidelines
 
--- No preference_hints table for now. Recent corrections are queried
--- directly from traces and injected into the session prompt.
--- Add a dedicated table if simple injection gets too noisy.
+When the system sees repeated denial feedback on the same pattern, `guideline_candidates()` drafts permanent prompt injections (e.g., "Use AppError with error codes, not generic Error"). Accepted guidelines go into the system prompt. The model never writes its own rules — the CLI detects patterns, drafts suggestions, the developer confirms.
 
-CREATE TABLE sessions (
-    id TEXT PRIMARY KEY,
-    mode TEXT NOT NULL,                 -- "pair" | "async"
-    interaction_style TEXT,             -- [not implemented] "hands_off" | "hands_on" | "collaborative" | "takeover"
-    task_description TEXT,
-    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    ended_at TIMESTAMP,
-    total_actions INTEGER DEFAULT 0,
-    total_check_ins INTEGER DEFAULT 0,
-    total_auto_approvals INTEGER DEFAULT 0,
-    total_corrections INTEGER DEFAULT 0,
-    total_denials INTEGER DEFAULT 0,
-    session_takeover BOOLEAN DEFAULT FALSE,
-    model_version TEXT
-);
+## Database Schema
+
+SQLite with 8 tables:
+
+| Table | Purpose |
+|-------|---------|
+| `leases` | Temporary write trust grants (repo_root, file_path, expires_at, source) |
+| `read_leases` | Temporary read trust grants (same structure) |
+| `decisions` | High-level approval records (task, approved, planned/touched files) |
+| `decision_traces` | Per-file decision log — 28 columns capturing every signal, decision, and outcome |
+| `plan_revisions` | Plan checkpoint history (revision rounds, developer feedback, approval) |
+| `hard_constraints` | Permanent rules (path_pattern, read_policy, write_policy, source, overridable) |
+| `behavioral_guidelines` | Learned/imported prompt directives (guideline text, source) |
+| `autonomy_preferences` | Learned check-in preferences per repo (JSON blob) |
+
+The `decision_traces` table is the primary data source for post-study analysis. It records: stage, action_type, file_path, change_type, diff_size, blast_radius, lease state, approval history, policy score + reasons, user decision, response time, rubber-stamp flag, edit distance, feedback text, verification result, model confidence, check-in initiator, participant/run/task study metadata, and autonomy mode.
+
+## CLI Commands
+
+All commands use the `sc` prefix. Core surface:
+
+```
+sc run --task "..."              # main orchestration loop
+sc ask "..."                     # chat without changes
+sc init                          # initialize repo config
+sc doctor                        # verify AWS/Bedrock setup
+sc report                        # session summary
+
+sc rules import <file>           # import constraints from AGENTS.md/CLAUDE.md
+sc rules constraints             # list/add hard constraints
+sc rules guidelines              # list/add behavioral guidelines
+sc rules guidelines-suggest      # suggest guidelines from trace patterns
+
+sc observe traces                # query decision history
+sc observe explain <id>          # explain a specific trace
+sc observe preferences           # show learned autonomy preferences
+sc observe preferences-clear     # reset learned preferences
+sc observe checkin-stats         # check-in usefulness metrics
+sc observe leases                # list active trust grants
+sc observe export                # export latest session bundle for lab analysis
+sc observe reset-study-state     # clear mutable state between participants
+
+sc config set-mode               # set qualitative autonomy mode
+sc config set-verification-cmd   # custom post-write verification
 ```
 
-Agents.md/CLAUDE.md files are parsed into `hard_constraints`. Conservative: if a rule can't be confidently parsed, it becomes `always_check_in` rather than a guess. Soft hints like "be careful with billing" lower initial trust for matching paths instead of creating hard constraints.
+## Configuration (SAConfig)
 
+| Field | Default | Purpose |
+|-------|---------|---------|
+| `model_id` | (required) | Bedrock model ID |
+| `aws_region` | us-east-1 | AWS region |
+| `max_tokens` | 2500 | Model output limit |
+| `temperature` | 0.0 | Model temperature |
+| `lease_ttl_hours` | 72 | Lease expiration |
+| `scope_budget_files` | 12 | Max files per action |
+| `autonomy_mode` | balanced | User-facing autonomy preset |
+| `permanent_approval_threshold` | 3 | Consecutive approvals for permanent lease |
+| `read_max_chars` | 12000 | File content truncation |
+| `adaptive_policy_enabled` | true | Enable heuristic policy |
+| `policy_proceed_threshold` | 0.9 | Internal auto-approve threshold |
+| `policy_flag_threshold` | 0.2 | Internal flag-for-review threshold |
+| `strict_plan_gate` | false | Always require plan approval |
+| `plan_checkpoint_max_files` | 1 | Files before plan gate fires |
+| `max_plan_revisions` | 2 | Revision rounds before forcing approval |
+| `verification_enabled` | true | Run post-write checks |
+| `verification_timeout_sec` | 20 | Verification command timeout |
+| `verification_command` | null | Custom verification command |
 
-## Policy engine
+## Project Structure
 
-### Heuristic baseline (implemented)
+```
+dynamic_autonomy_mvp/
+├── sc/
+│   ├── cli.py                  # command registration and routing
+│   ├── cli_shared.py           # shared CLI helpers (config, file context, truncation)
+│   ├── config.py               # SAConfig dataclass with JSON persistence
+│   ├── autonomy.py             # AutonomyPreferences, threshold adaptation, model payload parsing
+│   ├── agent_client.py         # Bedrock client wrapper, structured JSON protocol
+│   ├── policy.py               # heuristic policy scoring engine
+│   ├── plan_gate.py            # plan checkpoint decision logic
+│   ├── prompt_builder.py       # dynamic system prompt from trust state
+│   ├── trust_db.py             # SQLite schema + all data access
+│   ├── constraints.py          # AGENTS.md/CLAUDE.md rule parser
+│   ├── features.py             # change pattern classification, security detection, blast radius
+│   ├── schema.py               # Pydantic models (ReadRequest, IntentDeclaration, CheckInMessage)
+│   ├── session.py              # message history with pinned first message
+│   ├── session_feedback.py     # recent decision/correction context for prompts
+│   ├── checkin_quality.py      # check-in message validation (markers, length, options)
+│   ├── verification.py         # post-write verification runner
+│   ├── phase.py                # workflow phase gates (research/planning/implementation/review)
+│   ├── patch.py                # patch validation (path escape, scope enforcement)
+│   ├── repo.py                 # git repo root resolution
+│   ├── commands/
+│   │   ├── admin.py            # init, doctor, ask, constraints, guidelines, import-rules
+│   │   ├── observe.py          # traces, explain, preferences, checkin-stats, leases
+│   │   └── shared.py           # repo/db resolution helpers
+│   └── run/
+│       ├── command.py          # top-level run orchestration
+│       ├── read_stage.py       # read permission/policy flow
+│       ├── apply_stage.py      # write policy + atomic apply + verification
+│       ├── model.py            # model check-ins, phase transitions, retries
+│       ├── helpers.py          # feedback learning, change metrics, policy decisions
+│       ├── traces.py           # trace persistence helpers
+│       ├── reporting.py        # end-of-run summary + guideline suggestions
+│       └── ui.py               # terminal prompts and rendering
+├── tests/                      # 58 unit tests across 18 test files
+├── SPEC.md
+└── README.md
+```
 
-Four possible decisions: CHECK_IN, AUTO_APPROVE, AUTO_APPROVE_FLAG, DENY.
+---
 
-Decision inputs (the "ActionContext"): file path, action type, change pattern, workflow phase, diff size, blast radius, security sensitivity, shared interface flag, code complexity, prior approvals/denials/corrections, edit distance, trust score, active leases, session denials, session corrections, time since last check-in, action count.
+# Part 2: Research
 
-Evaluation order:
+## Why This Matters
 
-1. Hard constraints win. `always_deny` / `always_check_in` / `always_allow` are immediate returns.
-2. Active leases grant auto-approval, unless there's been a denial this session.
-3. Score computation from features:
-   - History (strongest): approvals +0.3, denials −0.8, corrections −0.5, edit distance −0.4
-   - Risk: security-sensitive −3.0, shared interface −2.0, blast radius −0.5 to −1.5, large diffs −0.5 to −1.0
-   - Phase: planning −2.0 (always ask more), research +1.0 (reads are cheap)
-   - Session momentum: recent denial −2.0, many corrections −1.0
-4. Thresholds: ≥ 3.0 → AUTO_APPROVE. ≥ 0.0 → AUTO_APPROVE_FLAG. < 0.0 → CHECK_IN.
+Current tools offer binary autonomy: ask before every edit, or edit automatically. Static config files (CLAUDE.md, .cursorrules) capture preferences the developer can articulate in advance, but most preferences are implicit — they show up as correction patterns, review timing, edit distance, and phase-of-work context.
 
-All weights are initial guesses that Kevin and I have determined as importance, surveys will tune this data.
+Anthropic's study of millions of agent interactions (McCain et al., Feb 2026) found that agents are far more capable than their deployment patterns suggest. METR estimates Claude handles ~5-hour tasks, but real-world turn duration caps around 42 minutes. The gap isn't capability, it's trust infrastructure. Experienced developers shift from per-action approval to monitoring + targeted intervention (auto-approve rises from 20% to 40%+), and agent-initiated stops are more common than human interruptions on complex tasks. The top reason Claude self-stops is to present approach choices (35%). AdaptiveAuth learns and accelerates this behavioral shift per-developer.
 
-### Contextual bandit (future, not implemented)
+## The Trace-Prompt Feedback Loop
 
-After 50-100+ traces, train a learned policy. Contextual bandit over check-in decisions. State = vectorized ActionContext. Actions = {CHECK_IN, AUTO_APPROVE, AUTO_APPROVE_FLAG}. 
+This is the core mechanism. Every developer interaction produces a trace. Traces accumulate into trust scores, correction patterns, and behavioral guidelines. These are queried at session start to build the system prompt the model receives. The model then uses that context to reason about when to check in.
 
-Reward table (asymmetric — missing a needed check-in costs more than an unnecessary interruption):
+Concretely: the developer corrects the agent's error handling in session 3. That correction is logged as a trace with `change_pattern = "error_handling"`, `user_decision = "approve"`, `user_feedback_text = "Use AppError with error codes"`. In session 4, the prompt builder does two things:
 
-| Decision | Outcome | Reward |
+1. **Trust summary**: the model sees "Low-trust areas: error_handling — the developer has corrected you here before." Vague on purpose — no numeric scores, just enough for the model to reason about its own uncertainty.
+2. **Recent corrections**: the model sees the developer's own words. Specific and actionable.
+
+After 3+ corrections on the same pattern, the system suggests a behavioral guideline. Once accepted, the model follows the directive instead of checking in. Correction overhead drops to zero for that pattern.
+
+Full cycle: **traces → trust scores → prompt context → model reasoning → check-in decisions → developer response → traces**.
+
+## Pair Mode UX (implemented)
+
+```
+$ sc run --task "Refactor payment validation to use new schema"
+
+[AdaptiveAuth] Loaded trust profile: 847 prior interactions
+[AdaptiveAuth] Session started. Agent working...
+
+── Agent Plan ──────────────────────────────────────────────────
+Subtasks:
+  1. Update PaymentValidator.validate()     → CHECK-IN (corrected similar 3x)
+  2. Update test_payment_validation.py      → AUTO (12 approvals, 0 corrections)
+  3. Update PaymentTypes API interface      → FLAG (shared interface, 3 dependents)
+  4. Update API docs                        → AUTO (high trust)
+────────────────────────────────────────────────────────────────
+
+[1/4] PaymentValidator.validate()
+  Checking in because: you've corrected my payment validation changes 3 times.
+  [diff preview]
+  (a)pprove  (e)dit  (d)eny  (s)kip  > a
+
+[2/4] test_payment_validation.py — auto-approved (12 prior approvals)
+[3/4] PaymentTypes API interface — completed, flagged for summary review
+[4/4] API docs — auto-approved
+
+── Session Summary ─────────────────────────────────────────────
+  2 auto-approved  |  1 check-in (approved)  |  1 flagged
+────────────────────────────────────────────────────────────────
+```
+
+## Phase-Aware Behavior
+
+| Phase | Default | Learns to... |
 |---|---|---|
-| AUTO_APPROVE | Would have been approved | +1.0 |
-| AUTO_APPROVE | Denied or heavily edited | −1.0 |
-| AUTO_APPROVE | Minor edits | −0.3 |
-| CHECK_IN | Developer had meaningful input | +1.0 |
-| CHECK_IN | Developer considered then approved | +0.3 |
-| CHECK_IN | Rubber-stamped instantly | −0.5 |
-| AUTO_APPROVE_FLAG | Reviewed | +0.5 |
-| AUTO_APPROVE_FLAG | Denied or heavily edited | −0.5 |
+| Research | Read freely, write findings to markdown | Which modules need deep vs. shallow reads |
+| Planning | Heavy check-ins, developer annotates iteratively | What the developer always overrides in plans |
+| Implementation | Minimal interruptions, execute approved plan | Which implementation patterns get corrected |
+| Review | Surface results, flag failures | Which test failures are blocking vs. ignorable |
 
-Approval quality weighting: not all approvals are equal. Positive rewards are discounted by review quality — rubber-stamps (< 5s review) get 0.5x, batch reviews get 0.7x. Negative signals (denials, heavy corrections) are never discounted. Grunde-McLaughlin et al. showed better oversight interfaces increase false confidence; approval speed is the correction signal.
+## System Prompt
 
-### Full RL (if needed, not implemented)
+Built dynamically per-session from the trust DB. The model is an active participant in oversight but doesn't get information it could exploit — no exact trust scores (could game thresholds), no list of which files will be auto-approved (prevents strategic behavior). It does know which areas it's been corrected on and what the hard constraints are.
 
-Will delegate this decision to Kevin, Leijie, Amy.
-
-Only if the bandit can't capture sequential dependencies (e.g., trust building within a session). Episode = session, state = context + session history, PPO or DQN. Don't build until bandit results show it's needed.
-
-
-## CLI commands (target UX; current implementation uses `sc` command set)
-
-```
-aa start [--mode pair|async] [--task "..."]
-aa status                               # async progress
-aa review                               # flagged items + async queue
-aa history [--file path] [--session id] [--last n]
-aa trust [path]
-aa trust set <path> <level>             # always_ask | cautious | trusted | auto
-aa trust revoke <path>
-aa policy eval [--traces path] [--baseline heuristic|bandit]
-aa policy train [--traces path] [--algorithm linucb|epsilon_greedy]
-aa import [CLAUDE.md | .cursorrules | AGENTS.md]
-aa export
-aa explain <trace_id>
-aa guidelines [--active] [--learned] [--imported]
-aa guidelines add "<text>" [--pattern <pattern>]
-aa guidelines remove <id>
-```
-
-
-## Session flow
-
-Initialize: create session, load trust DB + constraints + policy, build system prompt with trust context, start agent with task + prompt.
-
-Main loop per action:
-
-1. If the agent voluntarily pauses (CheckInMessage) → route to developer, log with initiator="model_proactive", feed response back. Model confidence is logged but not acted on.
-2. For file actions → build ActionContext, run policy against constraints.
-3. Execute: DENY notifies agent. AUTO_APPROVE validates (hash check etc.) then applies. AUTO_APPROVE_FLAG applies + flags for summary. CHECK_IN presents to developer, records wall-clock review duration and tags realtime vs. batch.
-4. Log full trace. Update session state. Rebuild prompt on phase transitions.
-
-Session end: print summary, update trust scores, check for guideline candidates (§10.2), present any suggestions.
-
-
-## Agent protocol (partially implemented)
-
-Structured JSON messages, validated by CLI before acting.
-
-**ReadRequest** — files + reason. **IntentDeclaration** — phase, plan, subtasks (each with file, action type, change pattern, confidence), estimated files/blast radius. **FileUpdate** — path, original hash (for conflict detection), content, summary, subtask ref. **CheckInMessage** — reason, type (plan_review / decision_point / progress_update / deviation_notice / phase_transition / uncertainty), content, options, assumptions, confidence. **PlanRevision** — plan path, round number, developer annotations, agent changes.
-
-The assumptions field in CheckInMessage is important: Grunde-McLaughlin et al. found that surfacing what the agent assumed (without being asked) had the highest error detection rate across all interface designs they tested.
-
-
-## System prompt (implemented with current prompt-builder scope)
-
-Built dynamically per-session from the trust DB and traces (see "trace → prompt feedback loop" above). Updated at phase transitions. The model is an active participant in oversight but doesn't get information it could exploit.
-
-The CLI handles file-level governance. The model handles design-level reasoning. The model doesn't know exact trust scores (could game thresholds) or which files will be auto-approved (prevents strategic behavior). It does know which areas it's been corrected on and what the hard constraints are.
-
-The prompt includes:
-- Role framing: "you are the builder consulting on structural decisions, not asking permission"
-- Check-in guidance: surface expensive-to-reverse decisions, not easy-to-fix ones
-- Check-in structure: what + why, alternatives, tradeoffs, recommendation, assumptions, confidence
-- Trust summary: high/low trust areas by name (no scores), correction patterns by type (not file)
-- Hard constraints
-- Behavioral guidelines from past corrections
-- Last 5 corrections with developer feedback text (bridges the gap before guideline threshold)
-- Phase-specific guidance (see table below)
-- Session warnings (e.g., recent denials)
-
-| Phase | Model guidance |
-|---|---|
-| Research | Read freely. Don't implement. Check in when ready to propose a plan. |
-| Planning | Present plan before implementing. Check in on plan + approach choices. Don't code until plan is approved. |
-| Implementation | Minimize check-ins. Execute the plan. Only pause for unplanned architectural decisions or significant confidence drops. |
-| Review | Run tests, surface results. Check in on unexpected failures. |
-
-
-## Features (partially implemented)
-
-Per file change: diff size, files in diff, blast radius (import graph), shared interface flag, security sensitivity (path patterns + content), cyclomatic complexity, git authorship, recency of developer edits, test coverage.
-
-Each change is classified into a semantic pattern (test_generation, error_handling, api_change, refactor, config_change, documentation, new_feature, bug_fix, dependency_update, ui_change, data_model_change, security_sensitive) so trust generalizes across files with similar change types. Rule-based classification first; upgrade to lightweight LLM classification if rules miss too many patterns.
-
-
-## Trust updates (partially implemented)
-
-After each interaction, the trust record for that (file, action_type, change_pattern) is updated:
-- Approval → increment approval count
-- Denial → increment denial count
-- Correction (approve-with-edits) → increment correction count, update rolling average edit distance
-
-Composite score:
-
-    raw = (approvals × 0.3) − (denials × 0.8) − (corrections × 0.5) − (edit_distance × 0.01)
-    trust = raw × exp(−0.05 × days_since_last_interaction)
-
-
-Leases auto-grant after enough consecutive approvals with zero denials and ≤1 correction. Auto-revoke when denials or corrections hit a threshold.
-
-### Corrections → guidelines
-
-Trust scores change *how often* the system asks. Guidelines change *what the model does*. "Low trust on error handling" means more check-ins; "Use AppError with error codes" means the model actually changes its behavior.
-
-When the system sees 3+ corrections on the same change pattern across files, it drafts a guideline suggestion. Confidence is higher when corrections span multiple files (pattern-level preference, not file-specific). At session end, candidates are presented: accept, edit, reject, or defer. Accepted guidelines go into the system prompt for all future sessions.
-
-The model never writes its own rules. The CLI detects patterns, drafts suggestions, the developer confirms. The model receives guidelines through the prompt. This preserves the untrusted-model boundary.
-
-Evaluation signal: if correction rates drop on a pattern after a guideline is added, the feedback loop works.
-
-### Immediate correction feedback
-
-The guideline threshold is 3 corrections, so the first two are invisible to the model. To bridge this gap, we query the last 5 corrections from the traces table and inject their descriptions + developer feedback into the session prompt. No separate table, no similarity matching. If this gets too noisy, add a dedicated preference_hints table with deduplication later.
-
-### Drift detection (future, not implemented)
-
-Once guidelines exist and have been active for multiple sessions: track corrections that contradict them. If 2+ contradictions, flag at session end. Developer can update, remove, or keep the guideline. Similarly, session takeover detection (developer making manual commits, bypassing the agent entirely) is deferred — just a manual boolean flag for now.
-
+The prompt includes: role framing, check-in guidance, trust summary (high/low trust areas by name, no scores), hard constraints, behavioral guidelines, last 5 corrections with developer feedback text, autonomy preferences, phase-specific guidance, session warnings.
 
 ## Evaluation
 
 ### Metrics
 
-Primary: correct trust rate, correct caution rate, unnecessary interruption rate, missed check-in rate.
+**Primary:** correct trust rate, correct caution rate, unnecessary interruption rate, missed check-in rate.
 
-Two-sided calibration: CLI-initiated useful/wasted, model-initiated useful/wasted, user interrupt rate, model-CLI agreement rate.
+**Two-sided calibration:** CLI-initiated useful/wasted, model-initiated useful/wasted, user interrupt rate, model-CLI agreement rate.
 
-Secondary: check-in frequency over time, task completion time, user correction rate, trust score trajectory.
+**Secondary:** check-in frequency over time, task completion time, user correction rate, trust score trajectory.
 
-Guideline loop: adoption rate, correction rate pre/post guideline, pattern coverage.
+**Guideline loop:** adoption rate, correction rate pre/post guideline, pattern coverage.
 
-Approval quality: rubber-stamp rate (< 5s), batch vs. realtime accuracy, false confidence rate.
+**Approval quality:** rubber-stamp rate (<5s), batch vs. realtime accuracy, false confidence rate.
 
-Preference learning: correction repeat rate across sessions, cold-start corrections to stable behavior.
+**Preference learning:** correction repeat rate across sessions, cold-start corrections to stable behavior.
 
 ### Baselines
 
 1. Always Ask — 100% correct caution, 0% correct trust, maximum interruption
 2. Never Ask — 0% correct caution, maximum missed check-ins
 3. Static Rules — hand-coded from survey data, explicit preferences only
-4. Heuristic — the weighted policy (§5.1)
-5. Bandit — the learned policy (§5.2)
+4. Heuristic — the weighted policy (current implementation)
+5. Bandit — the learned policy (future)
 
 The gap between static rules and the learned policy is the paper's core finding: implicit preferences that config files can't capture.
 
 ### Protocol (adapted from PAHF)
 
-Phase 1 (sessions 1–5): cold start, sensible defaults, measure corrections to stable behavior.
-Phase 2 (sessions 6–15): evaluate learned preferences, compare all baselines.
-Phase 3 (sessions 16–20): preference shift (developer changes style/framework). Measure adaptation speed. Detail depends on what's learned in phases 1–2.
-Phase 4 (sessions 21–25): evaluate post-shift adaptation. Should be faster than the original cold start.
+Phase 1 (sessions 1-5): cold start, sensible defaults, measure corrections to stable behavior.
+Phase 2 (sessions 6-15): evaluate learned preferences, compare all baselines.
+Phase 3 (sessions 16-20): preference shift (developer changes style/framework). Measure adaptation speed.
+Phase 4 (sessions 21-25): evaluate post-shift adaptation. Should be faster than the original cold start.
 
 Per-trace: extract features, run each policy, compare against ground truth, compute quality-weighted reward.
 
-Reporting: accuracy/precision/recall per policy, learning curves, feature ablation, qualitative examples of implicit preference capture, survey alignment, approval quality distributions, preference learning curves.
+Reporting: accuracy/precision/recall per policy, learning curves, feature ablation, qualitative examples of implicit preference capture, survey alignment, approval quality distributions, preference learning curves, initiator distribution over time, model calibration, CLI calibration, three-way agreement (CLI x model x user), model confidence correlation with outcomes.
 
-Calibration analysis: initiator distribution over time, model calibration (useful vs. wasted check-ins), CLI calibration, missed check-in attribution, three-way agreement (CLI × model × user), model confidence correlation with outcomes.
+## Related Work
 
+**CowCorpus (Huq et al., 2025, arXiv 2602.17588).** 400 real-user web navigation trajectories. Four interaction styles (hands-off, hands-on, collaborative, takeover) stable per user across tasks. Style-conditioned models improved intervention prediction 61-63%. Validates our bet that per-developer preferences are learnable. They retrain the model; we learn a separable governance policy that works with any model.
 
-## Related work
+**Grunde-McLaughlin et al. (2025, arXiv 2602.16844).** Three user studies on Computer Use Agents. The best trace interface helped developers find errors faster (Hedges' g: -0.65) but increased false confidence when wrong (g: 0.85). Developers rubber-stamp because the process *looks* reasonable. We took: review duration tracking as a quality signal, assumptions field in check-ins, asymmetric quality weighting (negative signals always full weight, positive signals discounted by review speed).
 
-Three papers directly shaped this design.
+**PAHF (Liang et al., 2026, arXiv 2602.16173).** Meta/Princeton framework for continual personalization. Post-action feedback is "particularly important for robust personalization without pre-existing user data" — our cold-start scenario exactly. We took: immediate correction injection, drift detection design, four-phase evaluation protocol. Key difference: PAHF's memory is model-internal; ours is CLI-governed.
 
-**CowCorpus (Huq et al., 2025, arXiv 2602.17588).** 400 real-user web navigation trajectories. Four interaction styles (hands-off, hands-on, collaborative, takeover) that are stable per user across tasks. Style-conditioned models improved intervention prediction 61–63%. Validates our bet that per-developer preferences are learnable. They retrain the model; we learn a separable governance policy that works with any model. Our `session_takeover` field and per-user consistency assumption come from this.
+## Future Work
 
-**Grunde-McLaughlin et al. (2025, arXiv 2602.16844).** Three user studies on Computer Use Agents. Critical finding: the best trace interface (surfacing requirements + assumptions) helped developers find errors faster (Hedges' g: −0.65) but increased false confidence when wrong (g: 0.85). Developers rubber-stamp because the process *looks* reasonable. This directly threatens any trust-learning system. We took: review duration tracking as a quality signal, assumptions field in check-ins, realtime/batch distinction, and asymmetric quality weighting in the reward function (negative signals always full weight, positive signals discounted by review speed and mode).
+### Near-term (post lab study)
 
-**PAHF (Liang et al., 2026, arXiv 2602.16173).** Meta/Princeton framework for continual personalization. Pre-action clarification + post-action correction, both necessary. Post-action feedback is "particularly important for robust personalization without pre-existing user data" — our cold-start scenario exactly. We took: immediate correction injection (bridging the guideline threshold gap), drift detection design, four-phase evaluation protocol, model confidence as a logged signal. Key difference: PAHF's memory is model-internal; ours is CLI-governed. The model never writes its own rules.
+1. **Learned policy weights** — replace guessed heuristic weights with a classifier trained on `decision_traces` data. Contextual bandit (LinUCB) over check-in decisions. Asymmetric reward: missing a needed check-in costs more than an unnecessary interruption.
 
+2. **Async delegation mode** — background execution with `sc status`, `sc review`, check-in queue, session summaries.
 
-## Roadmap
+3. **Structured plan rendering** — render plans as structured markdown with section headers, file-level summaries, and inline code samples. Goal: minimize ambiguity before the developer approves a plan.
 
-### Phase 1: Foundation (weeks 1–2)
-- Trace logging, agents.md parser, workflow phase detection
-- Blast radius computation, security-sensitive detection, change pattern classification
-- Governance checks: hash validation, diff validation, scope enforcement
+4. **Deterministic guideline enforcement** — currently behavioral guidelines are purely soft (injected into the system prompt as preferred style). The model can ignore them. When a guideline is accepted, classify it into one of three enforcement tiers:
+   - **Path constraint** (e.g., "never modify production configs") → convert to hard constraint in `hard_constraints` table (deterministic, CLI-enforced).
+   - **Content rule** (e.g., "use AppError, not generic Error") → generate a grep/lint check added to the post-write verification pipeline (deterministic, fails apply stage).
+   - **Style preference** (e.g., "prefer composition over inheritance") → keep as prompt injection (soft, model-dependent).
+   The model can do this classification at guideline creation time. This closes the gap between "the system knows what the developer wants" and "the system actually enforces it."
 
-### Phase 2: Heuristic policy + prompt layer (week 3)
-- ActionContext + feature extraction
-- Heuristic policy wired into session loop
-- Trust score computation + lease logic
-- System prompt builder: trust summary, constraints, guidelines, recent corrections
-- Check-in initiator tracking, `aa trust` / `aa history` / `aa explain`
-- Behavioral guidelines table + correction-to-guideline loop
-- Review duration capture + review mode tagging
-- Assumptions field in check-in protocol
-- Quality-weighted reward function
-- Model version tracking, model confidence logging
+5. **Spec-aware execution loop** — optional `--spec` artifacts should eventually support structured parsing instead of simple bounded prompt injection. The current implementation injects a truncated spec digest into the system prompt and requires the plan to expose `requirements_covered`, `expected_change_types`, and `potential_deviations`. Future work is retrieving exact requirement sections on demand and storing spec lineage more explicitly for analysis.
 
-### Phase 2b: Deferred (implement when prerequisites exist)
-- Preference drift detection (needs active guidelines)
-- Session takeover auto-detection (needs observed patterns)
-- Model confidence as active CLI override (needs calibration data)
-- Dedicated preference_hints table (needs evidence simple injection is insufficient)
+### Lab study shipping requirements
 
-### Phase 3: Data collection (weeks 3–5, concurrent)
-- Daily use on own research code, target 100+ interactions
-- Search for existing trace datasets (SWE-Bench traces, Copilot logs)
+These items are required before distributing the prototype to study participants.
 
-### Phase 4: Pair programming UX (week 4)
-- Interactive diff preview, plan display with per-subtask decisions
-- Session momentum, phase transitions, annotation cycle support
+1. **Qualitative autonomy control** — expose `strict` / `balanced` / `milestone` / `autonomous` as the primary control surface. Threshold tuning remains internal and optionally available only for research/debug workflows.
 
-### Phase 5: Async delegation UX (week 5)
-- Background execution, `aa status`, `aa review`, check-in queue, session summaries
+2. **Milestone-first check-ins** — default behavior should align with survey feedback:
+   - plan approval
+   - phase transitions
+   - first risky write batch
+   - architectural or interface tradeoffs
+   - verification failures / recovery proposals
+   Routine low-risk edits should not interrupt.
 
-### Phase 6: Learned policy (weeks 6–7)
-- Context vectorization, reward computation, bandit training (LinUCB)
-- Evaluate against heuristic on held-out traces, feature ablation
-- Full RL only if bandit is insufficient
+3. **Study metadata on every trace** — record enough context to analyze behavior offline:
+   - participant identifier
+   - study run identifier
+   - optional task identifier
+   - autonomy mode used for the run
 
-### Phase 7: Evaluation + paper (weeks 8–10)
-- Full evaluation protocol, survey analysis, implicit preference examples
-- Paper: problem (survey + lit) → design → evaluation → findings
+4. **Operator-grade export** — one command should export session traces, report summary, active preferences, constraints, and guidelines for a participant/run without manual SQLite queries.
 
+5. **Operator-grade reset** — one command should reset learned state for a clean participant start:
+   - leases
+   - traces
+   - approval history
+   - learned autonomy preferences
+   Rules imported from fixture files can then be re-imported deterministically.
 
-## Design decisions
+6. **Qualitative reason strings** — the runtime UI should explain decisions in natural language:
+   - why a read/write/check-in happened
+   - why autonomy increased or decreased
+   - what milestone or risk condition triggered the pause
+   Users should not need to understand the scoring model to supervise the agent.
 
-Decisions worth recording because they'll need revisiting:
+### Medium-term
+
+6. **Interaction-style cold start prior (CowCorpus)** — classify users as hands-off/hands-on/collaborative/takeover from first 3-5 sessions using interrupt frequency, review duration, edit distance. Use style as a prior for thresholds before enough traces accumulate.
+
+7. **Reversibility as first-class risk signal (McCain)** — add `is_reversible` to traces. Score irreversible actions with an explicit penalty separate from blast radius.
+
+8. **Interrupt taxonomy (McCain)** — extend user_response with `partial_approve`, `user_takeover`. Add `interrupt_reason`: correction/takeover/redirect/excessive_execution/sufficient_progress. Takeover/sufficient-progress interrupts should be neutral or positive, not denials.
+
+9. **Review-phase failure preference learning** — track developer treatment of failing checks (blocking vs. ignorable). Persist in traces and surface in trust/prompt context.
+
+10. **Research-phase markdown writeback** — controlled write policy for `.md` findings/plan artifacts during research. Keep non-markdown writes blocked.
+
+### Long-term
+
+11. **Full RL** — only if the bandit can't capture sequential dependencies within sessions. Episode = session, state = context + session history, PPO or DQN.
+
+12. **Trust decay** — exponential decay on trust scores (target: ~14-day half-life). Not yet implemented because we need real usage data to validate the decay rate.
+
+13. **Drift detection** — track corrections that contradict existing guidelines. If 2+ contradictions, flag at session end for review.
+
+## Todo Backlog (Policy Enforcement Refactor)
+
+These items are approved for the next spec iteration and should be treated as implementation todos.
+
+1. **Verifiability-first policy taxonomy** — classify every policy by enforcement capability, not by domain:
+   - `deterministic_enforced` (hard block/fail)
+   - `deterministic_advisory` (warn + explicit override)
+   - `best_effort` (prompt steering only)
+   This replaces the implicit “file-access => hard constraint, everything else => guideline” split.
+
+2. **Policy expectation disclosure at creation time** — when a user adds/imports a rule, immediately report:
+   - enforcement class (`deterministic_enforced` / `deterministic_advisory` / `best_effort`)
+   - exact matched scope (files/globs)
+   - failure behavior (block / prompt / note)
+   - rationale if downgraded to best-effort.
+
+3. **Vague-scope resolution step** — for ambiguous policies (e.g., “frontend style files”), require disambiguation before persisting:
+   - propose concrete candidate scopes
+   - require user confirmation
+   - store normalized scope set + original natural-language policy text.
+
+4. **Promotable policy pipeline** — automatically attempt to promote verifiable natural-language policies to deterministic enforcement:
+   - process rules (e.g., “always run tests”) -> verification hooks
+   - content rules (e.g., “use AppError, not Error”) -> static checks/lints
+   - access rules -> hard constraints
+   - non-verifiable policies remain best-effort guidelines.
+
+5. **LLM policy judge/compiler** — add a dedicated policy-compiler model call that decides:
+   - prompt-only guidance vs deterministic script/check
+   - confidence + explanation for classification
+   - generated checker spec (not raw shell by default), with CLI validation before activation.
+   Runtime enforcement remains CLI-deterministic; the LLM is only a compiler/planner.
+
+6. **Subagent execution architecture (experimental)** — evaluate a two-agent topology:
+   - `planner/oversight subagent`: plans work according to autonomy and policy rules, emits checkpoints/delegations
+   - `coding subagent`: produces edits within delegated scope
+   - CLI remains the single enforcement boundary across both agents.
+   This is research-track; do not put on critical lab path until deterministic traceability is validated.
+
+## Design Decisions
 
 | Decision | Current | Revisit if... |
 |---|---|---|
-| Learning algorithm | Contextual bandit (LinUCB) | Strong sequential dependencies within sessions |
-| Features | Hand-crafted | Feature engineering becomes a bottleneck |
-| Change pattern classification | Rule-based | Rules miss too many patterns |
-| Trust model | Weighted per (file, action, pattern) | Relational structure → knowledge graph |
-| Trust decay | Exponential, ~14-day half-life | Users report stale trust |
-| Lease threshold | 5 consecutive approvals | Too aggressive or conservative |
-| Phase detection | Agent's intent declaration | Agent labels unreliable → use action-pattern heuristics |
+| Learning algorithm | Heuristic weights | Lab study data available → contextual bandit |
+| Change pattern classification | Rule-based (features.py) | Rules miss too many patterns → lightweight LLM |
+| Trust decay | None implemented | Users report stale trust → add exponential decay |
+| Lease threshold | 3 consecutive approvals | Too aggressive or conservative |
 | Model trust visibility | Vague summary, no scores | Model needs more to reason well, or is gaming it |
-| Prompt update frequency | Per-session + phase transitions | Needs mid-phase updates, or updates too expensive |
 | Initiator weighting | Equal CLI vs. model | Data shows one source is consistently better |
 | Model confidence | Logged, not trusted | Correlates well with outcomes → make it active |
-| Cold start | Sensible defaults, no interview | Takes too many interactions → add optional light interview |
+| Cold start | Sensible defaults, no interview | Takes too many interactions → add light interview |
 | Guideline threshold | 3 corrections on same pattern | Too noisy or too conservative |
-| Guideline authorship | CLI drafts, developer confirms | If suggestions are consistently accepted → reduce friction |
+| Guideline authorship | CLI drafts, developer confirms | Consistently accepted → reduce friction |
 | Model writes own rules | Never | N/A — hard architectural constraint |
-| Rubber-stamp threshold | < 5s review duration | 5s too aggressive → adjust per task complexity |
-| Approval quality discount | 0.5x rubber-stamp, 0.7x batch | Starves learning or corrupts trust |
-| Correction feedback | Last 5 from traces table | Too noisy → build dedicated hints table |
-| Drift detection | Deferred, 2 contradictions planned | N/A until guidelines active |
-| Takeover detection | Manual flag | Patterns observed → git watcher |
-
-
-## Project structure
-
-Current prototype layout:
-
-```
-dynamic_autonomy_mvp/
-├── sc/
-│   ├── cli.py                # command registration only
-│   ├── commands/
-│   │   ├── admin.py          # init/doctor/config/rules/admin commands
-│   │   ├── observe.py        # traces/report/explain/demo commands
-│   │   └── shared.py         # shared command helpers (repo/db resolution)
-│   ├── run/
-│   │   ├── command.py        # top-level run orchestration
-│   │   ├── read_stage.py     # read permission/policy flow
-│   │   ├── apply_stage.py    # write policy + apply/verify flow
-│   │   ├── model.py          # model check-ins, phase transitions, retries
-│   │   ├── traces.py         # trace persistence helpers
-│   │   ├── reporting.py      # end-of-run summary + guideline suggestions
-│   │   ├── ui.py             # CLI prompts and rendering
-│   │   └── helpers.py        # shared run-stage helpers
-│   ├── trust_db.py           # SQLite schema + data access layer
-│   ├── policy.py             # heuristic policy scoring
-│   ├── prompt_builder.py     # dynamic system prompt builder
-│   ├── constraints.py        # rules parser/import helpers
-│   └── ...                   # schema/session/config/repo/features/verification
-├── tests/
-│   └── test_*.py             # unit tests for DB/policy/parser/prompt/phase
-├── docs/
-│   └── READING_ORDER.md      # onboarding path for new contributors
-├── README.md
-└── SPEC.md
-```
-
-Post-demo (optional) target refactor:
-- split `trust_db.py` into `trust_schema.py` + `trust_queries.py` + `trust_metrics.py`
-- add `policy_bandit.py` and offline replay evaluator behind feature flag
+| Rubber-stamp threshold | <5s review duration | 5s too aggressive → adjust per task complexity |
+| Approval quality discount | 0.5x rubber-stamp | Starves learning or corrupts trust |
+| Preference learning | Model-based (no regex) | Model calls too slow → add fast-path heuristics |
+| Preference accumulation | OR/UNION, no decay | Preferences go stale → add decay mechanism |

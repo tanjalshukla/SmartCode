@@ -35,10 +35,9 @@ This creates local state in `.sc/config.json` and `.sc/trust.db`.
 
 ## Command Groups
 
-- `python -m sc config ...` config updates (`set-threshold`, `set-verification-cmd`)
+- `python -m sc config ...` config updates (`set-mode`, `set-verification-cmd`)
 - `python -m sc rules ...` import/manage hard constraints and guidelines
 - `python -m sc observe ...` traces, leases, explainability, stats, preferences
-- `python -m sc dev ...` demo/dev utilities
 
 Legacy top-level aliases still work for compatibility.
 
@@ -66,17 +65,23 @@ python -m sc rules constraints
 python -m sc rules guidelines
 ```
 
-Tune autonomy threshold:
+Set autonomy mode:
 
 ```bash
-python -m sc config set-threshold 3
-python -m sc run "Update foo.py" --permanent-threshold 5
+python -m sc config set-mode balanced
+python -m sc config set-mode milestone
 ```
 
 Reset learned autonomy preferences:
 
 ```bash
 python -m sc observe preferences-clear --yes
+```
+
+Export the latest session bundle for analysis:
+
+```bash
+python -m sc observe export --out .sc/exports
 ```
 
 ## Enforcement Semantics
@@ -103,4 +108,4 @@ python -m pytest tests -q
 
 - Bedrock model ID can be set via `--model-id` or `SA_MODEL_ID`.
 - Read context is truncated by `read_max_chars` in `.sc/config.json`.
-- Adaptive policy knobs live in `.sc/config.json`.
+- Numeric policy knobs remain in `.sc/config.json`, but the normal user-facing control is `autonomy_mode`.

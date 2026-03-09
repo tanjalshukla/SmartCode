@@ -36,6 +36,14 @@ class ConstraintParserTests(unittest.TestCase):
         self.assertIn(("docs/*.md", "always_allow"), rows)
         self.assertIn("Be careful with billing module changes", parsed.behavioral_guidelines)
 
+    def test_parses_split_read_write_rule(self) -> None:
+        text = "Allow reads for `src/frontend/*` but check in before writing to the same files."
+        parsed = parse_constraints_from_text(text, source="AGENTS.md")
+        self.assertEqual(len(parsed.constraints), 1)
+        constraint = parsed.constraints[0]
+        self.assertEqual(constraint.read_policy, "always_allow")
+        self.assertEqual(constraint.write_policy, "always_check_in")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -16,7 +16,6 @@ from typing import Iterator, Iterable
 from .autonomy import (
     AutonomyPreferences,
     merge_preferences,
-    update_preferences_from_feedback,
 )
 
 
@@ -43,9 +42,42 @@ class PolicyHistory:
 @dataclass(frozen=True)
 class HardConstraint:
     path_pattern: str
-    constraint_type: str
     source: str
     overridable: bool
+    constraint_type: str | None = None
+    read_policy: str | None = None
+    write_policy: str | None = None
+
+    def __post_init__(self) -> None:
+        shared = self.constraint_type or self.read_policy or self.write_policy or "always_check_in"
+        read_policy = self.read_policy or shared
+        write_policy = self.write_policy or shared
+        object.__setattr__(self, "read_policy", read_policy)
+        object.__setattr__(self, "write_policy", write_policy)
+        if read_policy == write_policy:
+            normalized = read_policy
+        else:
+            normalized = f"read:{read_policy}, write:{write_policy}"
+        object.__setattr__(self, "constraint_type", normalized)
+
+    def policy_for(self, access_type: str) -> str:
+        return self.read_policy if access_type == "read" else self.write_policy
+
+    @classmethod
+    def for_both(
+        cls,
+        *,
+        path_pattern: str,
+        constraint_type: str,
+        source: str,
+        overridable: bool,
+    ) -> "HardConstraint":
+        return cls(
+            path_pattern=path_pattern,
+            source=source,
+            overridable=overridable,
+            constraint_type=constraint_type,
+        )
 
 
 @dataclass(frozen=True)
@@ -208,6 +240,10 @@ class TrustDB:
                     model_confidence_self_report REAL,
                     model_assumptions_json TEXT,
                     check_in_initiator TEXT,
+                    participant_id TEXT,
+                    study_run_id TEXT,
+                    study_task_id TEXT,
+                    autonomy_mode TEXT,
                     created_at INTEGER NOT NULL
                 )
                 """
@@ -225,6 +261,10 @@ class TrustDB:
                     reasons_json TEXT NOT NULL,
                     developer_feedback TEXT,
                     approved INTEGER NOT NULL,
+                    participant_id TEXT,
+                    study_run_id TEXT,
+                    study_task_id TEXT,
+                    autonomy_mode TEXT,
                     created_at INTEGER NOT NULL
                 )
                 """
@@ -236,6 +276,8 @@ class TrustDB:
                     repo_root TEXT NOT NULL,
                     path_pattern TEXT NOT NULL,
                     constraint_type TEXT NOT NULL,
+                    read_policy TEXT,
+                    write_policy TEXT,
                     source TEXT NOT NULL,
                     overridable INTEGER NOT NULL DEFAULT 0,
                     created_at INTEGER NOT NULL
@@ -294,6 +336,10 @@ class TrustDB:
                 ("expected_behavior", "TEXT"),
                 ("model_confidence_self_report", "REAL"),
                 ("model_assumptions_json", "TEXT"),
+                ("participant_id", "TEXT"),
+                ("study_run_id", "TEXT"),
+                ("study_task_id", "TEXT"),
+                ("autonomy_mode", "TEXT"),
             ]
             for column, definition in migrations:
                 self._ensure_column(
@@ -308,12 +354,36 @@ class TrustDB:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_plan_revisions_repo_session ON plan_revisions (repo_root, session_id)"
             )
+            plan_migrations = [
+                ("participant_id", "TEXT"),
+                ("study_run_id", "TEXT"),
+                ("study_task_id", "TEXT"),
+                ("autonomy_mode", "TEXT"),
+            ]
+            for column, definition in plan_migrations:
+                self._ensure_column(
+                    conn,
+                    table="plan_revisions",
+                    column=column,
+                    definition=definition,
+                )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_constraints_repo_pattern ON hard_constraints (repo_root, path_pattern)"
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_constraints_repo_source ON hard_constraints (repo_root, source)"
             )
+            constraint_migrations = [
+                ("read_policy", "TEXT"),
+                ("write_policy", "TEXT"),
+            ]
+            for column, definition in constraint_migrations:
+                self._ensure_column(
+                    conn,
+                    table="hard_constraints",
+                    column=column,
+                    definition=definition,
+                )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_guidelines_repo_source ON behavioral_guidelines (repo_root, source)"
             )
@@ -542,9 +612,14 @@ class TrustDB:
         constraints: Iterable[HardConstraint],
     ) -> int:
         now = int(time.time())
-        unique: dict[tuple[str, str, str], HardConstraint] = {}
+        unique: dict[tuple[str, str, str, str], HardConstraint] = {}
         for constraint in constraints:
-            key = (constraint.path_pattern, constraint.constraint_type, constraint.source)
+            key = (
+                constraint.path_pattern,
+                str(constraint.read_policy),
+                str(constraint.write_policy),
+                constraint.source,
+            )
             unique[key] = constraint
 
         with self._connect() as conn:
@@ -557,14 +632,16 @@ class TrustDB:
             conn.executemany(
                 """
                 INSERT INTO hard_constraints (
-                    repo_root, path_pattern, constraint_type, source, overridable, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    repo_root, path_pattern, constraint_type, read_policy, write_policy, source, overridable, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
                         repo_root,
                         item.path_pattern,
                         item.constraint_type,
+                        item.read_policy,
+                        item.write_policy,
                         item.source,
                         1 if item.overridable else 0,
                         now,
@@ -578,19 +655,21 @@ class TrustDB:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT path_pattern, constraint_type, source, overridable
+                SELECT path_pattern, constraint_type, read_policy, write_policy, source, overridable
                 FROM hard_constraints
                 WHERE repo_root = ?
-                ORDER BY path_pattern, constraint_type
+                ORDER BY path_pattern, source, id
                 """,
                 (repo_root,),
             ).fetchall()
         return [
             HardConstraint(
                 path_pattern=row["path_pattern"],
-                constraint_type=row["constraint_type"],
                 source=row["source"],
                 overridable=bool(row["overridable"]),
+                constraint_type=row["constraint_type"],
+                read_policy=row["read_policy"],
+                write_policy=row["write_policy"],
             )
             for row in rows
         ]
@@ -599,12 +678,12 @@ class TrustDB:
         all_constraints = self.list_constraints(repo_root)
         return [constraint for constraint in all_constraints if fnmatch(file_path, constraint.path_pattern)]
 
-    def strongest_constraint(self, repo_root: str, file_path: str) -> HardConstraint | None:
+    def strongest_constraint(self, repo_root: str, file_path: str, *, access_type: str = "write") -> HardConstraint | None:
         priority = {"always_deny": 3, "always_check_in": 2, "always_allow": 1}
         matched = self.matching_constraints(repo_root, file_path)
         if not matched:
             return None
-        return max(matched, key=lambda item: priority.get(item.constraint_type, 0))
+        return max(matched, key=lambda item: priority.get(item.policy_for(access_type), 0))
 
     def delete_constraints(
         self,
@@ -711,14 +790,6 @@ class TrustDB:
         if row is None:
             return AutonomyPreferences()
         return AutonomyPreferences.from_json(row["preferences_json"])
-
-    def learn_autonomy_preferences(self, repo_root: str, feedback_text: str) -> list[str]:
-        current = self.autonomy_preferences(repo_root)
-        updated, learned = update_preferences_from_feedback(current, feedback_text)
-        if updated == current:
-            return []
-        self._save_autonomy_preferences(repo_root, updated)
-        return learned
 
     def merge_autonomy_preferences(
         self,
@@ -952,6 +1023,10 @@ class TrustDB:
         model_confidence_self_report: float | None = None,
         model_assumptions: Iterable[str] | None = None,
         check_in_initiator: str | None = None,
+        participant_id: str | None = None,
+        study_run_id: str | None = None,
+        study_task_id: str | None = None,
+        autonomy_mode: str | None = None,
     ) -> None:
         now = int(time.time())
         if review_duration_seconds is None and response_time_ms is not None:
@@ -979,8 +1054,8 @@ class TrustDB:
                     edit_distance, user_feedback_text,
                     verification_passed, verification_checks_json, expected_behavior,
                     model_confidence_self_report, model_assumptions_json,
-                    check_in_initiator, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    check_in_initiator, participant_id, study_run_id, study_task_id, autonomy_mode, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     repo_root,
@@ -1011,6 +1086,10 @@ class TrustDB:
                     model_confidence_self_report,
                     assumptions_json,
                     check_in_initiator,
+                    participant_id,
+                    study_run_id,
+                    study_task_id,
+                    autonomy_mode,
                     now,
                 ),
             )
@@ -1161,7 +1240,7 @@ class TrustDB:
                     review_duration_seconds, rubber_stamp,
                     user_feedback_text, verification_passed, expected_behavior,
                     model_confidence_self_report, model_assumptions_json,
-                    check_in_initiator, created_at
+                    check_in_initiator, participant_id, study_run_id, study_task_id, autonomy_mode, created_at
                 FROM decision_traces
                 WHERE repo_root = ?
                 ORDER BY created_at DESC, id DESC
@@ -1198,9 +1277,10 @@ class TrustDB:
             rows = conn.execute(
                 """
                 SELECT
-                    id, stage, action_type, file_path, change_type, policy_action, policy_score,
+                    id, session_id, stage, action_type, file_path, change_type, policy_action, policy_score,
                     user_decision, response_time_ms, review_duration_seconds, rubber_stamp,
-                    user_feedback_text, check_in_initiator, created_at
+                    user_feedback_text, check_in_initiator,
+                    participant_id, study_run_id, study_task_id, autonomy_mode, created_at
                 FROM decision_traces
                 WHERE repo_root = ? AND session_id = ?
                 ORDER BY created_at ASC, id ASC
@@ -1214,6 +1294,14 @@ class TrustDB:
             result = conn.execute(
                 "DELETE FROM decision_traces WHERE repo_root = ?",
                 (repo_root,),
+            )
+        return int(result.rowcount)
+
+    def clear_traces_for_file(self, repo_root: str, file_path: str) -> int:
+        with self._connect() as conn:
+            result = conn.execute(
+                "DELETE FROM decision_traces WHERE repo_root = ? AND file_path = ?",
+                (repo_root, file_path),
             )
         return int(result.rowcount)
 
@@ -1237,6 +1325,10 @@ class TrustDB:
         reasons: Iterable[str],
         developer_feedback: str | None,
         approved: bool,
+        participant_id: str | None = None,
+        study_run_id: str | None = None,
+        study_task_id: str | None = None,
+        autonomy_mode: str | None = None,
     ) -> None:
         now = int(time.time())
         reasons_json = json.dumps(list(reasons))
@@ -1245,8 +1337,9 @@ class TrustDB:
                 """
                 INSERT INTO plan_revisions (
                     repo_root, session_id, task, revision_round, plan_hash, intent_json,
-                    reasons_json, developer_feedback, approved, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    reasons_json, developer_feedback, approved,
+                    participant_id, study_run_id, study_task_id, autonomy_mode, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     repo_root,
@@ -1258,9 +1351,43 @@ class TrustDB:
                     reasons_json,
                     developer_feedback,
                     1 if approved else 0,
+                    participant_id,
+                    study_run_id,
+                    study_task_id,
+                    autonomy_mode,
                     now,
                 ),
             )
+
+    def latest_session_id(self, repo_root: str) -> str | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT session_id
+                FROM decision_traces
+                WHERE repo_root = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (repo_root,),
+            ).fetchone()
+        return None if row is None else str(row["session_id"])
+
+    def session_plan_revisions(self, repo_root: str, session_id: str) -> list[sqlite3.Row]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    id, session_id, task, revision_round, plan_hash, intent_json,
+                    reasons_json, developer_feedback, approved,
+                    participant_id, study_run_id, study_task_id, autonomy_mode, created_at
+                FROM plan_revisions
+                WHERE repo_root = ? AND session_id = ?
+                ORDER BY created_at ASC, id ASC
+                """,
+                (repo_root, session_id),
+            ).fetchall()
+        return rows
 
     def plan_revision_summary(self, repo_root: str) -> PlanRevisionSummary:
         with self._connect() as conn:
