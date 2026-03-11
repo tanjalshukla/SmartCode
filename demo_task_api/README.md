@@ -15,4 +15,22 @@ Main files:
 - `task_api/store.py` - in-memory task store
 - `task_api/errors.py` - structured application errors
 - `docs/task_api_spec.md` - task constraints for the demo
-- `DEMO_RULES.md` - Smart Coder rule import file
+- `DEMO_FLOW.md` - full demo script, including evidence capture
+
+## Run this Demo with Smart Coder
+
+From this directory:
+
+```bash
+git init   # one-time, if this fixture is not already its own repo
+sc reset --yes
+sc rules add "Never modify files under locked/." --yes
+sc rules add "Always check in before modifying task_api/api.py." --yes
+sc rules add "Always allow docs/*.md." --yes
+sc rules add "Always run tests after editing demo repo files." --yes
+sc config set-mode balanced
+sc config set-verification-cmd "python -m pytest tests -q"
+```
+
+Then:
+- run the two-session flow in `DEMO_FLOW.md`
