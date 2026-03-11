@@ -326,6 +326,7 @@ This subsection is the single place to look for important things discussed in re
 - **Post-hoc correction after approval** — the current system captures denials and inline corrections, but it does not yet let a developer retroactively mark an already-approved change as a negative signal.
 - **Checkpoint / rewind workflow** — the system applies writes atomically, but it does not yet expose first-class checkpoints or a rewind command that records deliberate rollback as a trust signal.
 - **Git-aware local-change risk** — the policy does not yet treat uncommitted developer edits as a separate risk signal when the agent proposes touching the same file.
+- **Asymmetric autonomy adaptation** — the current adaptation logic mainly moves in one direction with accumulated trust. A stronger policy should loosen routine, repeatedly successful work while maintaining or tightening interrupt sensitivity when complexity, novelty, or impact signals spike.
 - **Longitudinal human-centered evaluation** — the current system is instrumented for lab studies, but it has not yet been validated over repeated human sessions where interruption burden, understanding, steerability, and trust calibration are measured directly.
 
 ## Todo Backlog
@@ -337,6 +338,7 @@ This is the prioritized post-demo backlog.
 - **Learned policy replacement** — replace guessed heuristic weights with a learned decision policy. The first candidate is a contextual bandit: take the current context, choose among `proceed` / `proceed_flag` / `check_in`, and update from the observed outcome.
 - **Shadow-mode evaluation** — log what the alternate baselines would have done during live sessions without changing the active experience.
 - **Interaction-style priors** — use early-session behavior to infer a cold-start oversight style rather than treating every user identically.
+- **Asymmetric adaptation by complexity** — routine, repeatedly successful actions should become less interruptive over time, while complex or high-impact actions should remain sensitive to interruption even for experienced users.
 
 ### Priority 2: stronger rule enforcement and explanation
 
