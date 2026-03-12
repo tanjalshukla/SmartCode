@@ -1,92 +1,82 @@
 # Demo Flow
 
-This flow is optimized for a short research demo and fits a 5-minute video.
+This is the final 5-minute demo script.
 
-Goal:
-- show freeform rule authoring before the task starts
-- show spec-aware planning
-- trigger one strong model-initiated architectural check-in
-- give one explicit developer preference
-- show that the second session reuses that preference and interrupts less
+The story is:
+1. Smart Coder distinguishes hard governance from softer behavioral preferences.
+2. The coding loop is grounded in a task contract (`--spec`).
+3. The model can stop on a meaningful API tradeoff instead of guessing.
+4. A preference from session 1 changes behavior in session 2.
 
 Do not reset between session 1 and session 2.
 
-## Recommended 5-minute structure
+## 5-minute timing
 
-Use this pacing when recording:
+1. `0:00-0:25` - add one hard rule and one behavioral rule
+2. `0:25-2:10` - session 1: spec-aware plan + model-initiated API check-in
+3. `2:10-2:25` - show learned preference state
+4. `2:25-4:05` - session 2: related work with fewer interruptions
+5. `4:05-5:00` - observability close
 
-1. `0:00-0:45` - freeform rule authoring with `sc rules add`
-2. `0:45-2:30` - session 1: spec-aware planning + model-initiated architectural check-in
-3. `2:30-3:00` - show persisted preference state with `sc observe preferences`
-4. `3:00-4:20` - session 2: reduced interruption on related work
-5. `4:20-5:00` - observability close with `sc observe report` or `sc observe traces --limit 10`
-
-If time is tight, skip the optional sanity checks and keep only one observability command at the end.
-
-## Setup
+## Off-camera setup
 
 Run from the demo repo:
 
 ```bash
 cd demo_task_api
-git init   # one-time, makes this fixture the Smart Coder repo root
+git init   # one-time; makes this fixture the Smart Coder repo root
 git add .
-git commit -m "Initial demo fixture"   # optional but recommended for a clean baseline
+git commit -m "Initial demo fixture"   # optional but useful for a clean baseline
+git rev-parse --show-toplevel   # should print .../demo_task_api
 sc reset --yes
-sc rules add "Never modify files under locked/." --yes
-sc rules add "Always check in before modifying task_api/api.py." --yes
-sc rules add "Always allow docs/*.md." --yes
-sc rules add "Always run tests after editing demo repo files." --yes
+sc rules constraints-clear --all
+sc rules guidelines-clear --all
 sc config set-mode balanced
+```
+
+Assume the verification command has already been configured once by the operator as:
+
+```bash
 sc config set-verification-cmd "python -m pytest tests -q"
 ```
 
-Optional sanity check:
+That setup is operational, not part of the on-camera story.
+
+## Part 1: rule authoring
+
+Show these two commands on camera:
 
 ```bash
-sc rules constraints
-sc rules guidelines
+sc config set-mode balanced
+sc rules add "Always check in before modifying task_api/api.py."
+sc rules add "For routine validation and service-layer changes, continue autonomously; only check in for API, schema, or security changes."
 ```
 
-What to emphasize while recording:
-- `sc rules add` accepts freeform rules
-- the model decides whether each rule becomes an enforced constraint or prompt-level guidance
-- the CLI validates and persists the result before the coding session starts
+What this proves:
+- Smart Coder accepts freeform natural-language rules
+- one rule becomes a deterministic CLI-enforced constraint
+- one rule becomes prompt-level behavioral guidance
+- the system separates task contract, hard governance, and soft preference
 
-Recommended quick rule-authoring beat before session 1:
+Script:
+- the first rule is a hard boundary on API-facing edits
+- the second rule is a softer preference about interruption style
+- this is the distinction between governance and adaptive conditioning
+- do not linger here; the point is classification, not rule administration
 
-```bash
-sc rules add "Never modify files under locked/."
-sc rules add "Only check in for API or schema changes."
-sc rules constraints
-sc rules guidelines
-```
-
-What to say:
-- the first rule becomes a CLI-enforced hard constraint
-- the second becomes prompt-level guidance instead of a hard rule
-- this is the distinction between deterministic governance and behavioral conditioning
-
-If you need a shorter recording cut, show only these two rule-authoring commands:
-
-```bash
-sc rules add "Never modify files under locked/."
-sc rules add "Only check in for API or schema changes."
-```
-
-## Session 1: spec-aware planning + architectural check-in
+## Part 2: session 1
 
 ```bash
 sc run \
-"Read task_api/api.py, task_api/service.py, and docs/task_api_spec.md. Add support for a summary view of task counts by status while preserving the existing response envelopes and handler signatures unless a change is clearly needed. If there is an API design tradeoff, stop and check in with assumptions and options." \
+"Read task_api/api.py, task_api/service.py, and docs/task_api_spec.md. Add a new `/tasks/summary` endpoint that returns task counts by status while preserving the existing list response envelope and all public handler signatures. If there is an API design tradeoff, stop and check in with assumptions and options." \
 --spec docs/task_api_spec.md \
 --show-intent
 ```
 
-Recommended responses:
-- approve read access for `task_api/api.py`
+Script responses:
+- approve the reads
 - approve the plan
-- if the model asks whether to extend the existing list route or add a dedicated summary path, choose the dedicated path and paste:
+- if the model asks whether to extend the existing list route or add a dedicated summary path, choose the dedicated path and respond:
 
 ```text
 Add a dedicated summary path. Do not change the existing list response envelope or handler signatures. Continue autonomously for low-risk internal changes; only check in for API, signature, schema, or security changes.
@@ -94,30 +84,33 @@ Add a dedicated summary path. Do not change the existing list response envelope 
 
 - approve the apply step
 
-What to emphasize while recording:
-- the plan is grounded in the spec
-- the model surfaces a real API design fork instead of silently guessing
-- you are shaping future autonomy with explicit preference feedback
+What this proves:
+- the plan is grounded in the spec, not just the prompt
+- the model surfaces a real API design tradeoff instead of silently guessing
+- the user can explicitly calibrate future check-ins
+- reviewers can understand the task immediately: add one summary endpoint without breaking the existing API
 
-After the run, note the printed `Session id=...` and export it:
+After the run:
 
 ```bash
 sc observe export --session-id <SESSION_1_ID> --out .sc/exports/session1
 ```
 
-## Session 2: show learned preference and reduced interruption
-
-Inspect the learned preference state first:
+## Part 3: show persisted preference state
 
 ```bash
 sc observe preferences
 ```
 
-Then run the follow-up task:
+What this proves:
+- the preference is stored locally
+- Smart Coder is not relying only on immediate conversation state
+
+## Part 4: session 2
 
 ```bash
 sc run \
-"Using the same spec, add optional priority filtering and tighten validation messaging while preserving response envelopes and handler signatures. Continue autonomously for low-risk changes and only check in if an API or interface change is required." \
+"Using the same spec, add optional `priority` filtering to the existing task list endpoint and tighten validation messages while preserving response envelopes and handler signatures. Continue autonomously for low-risk changes and only check in if an API or interface change is required." \
 --spec docs/task_api_spec.md \
 --show-intent
 ```
@@ -126,45 +119,42 @@ Expected outcome:
 - fewer unnecessary check-ins than session 1
 - preserved response envelope
 - preserved handler signatures
-- continued autonomy on service-layer and validation work
-- any remaining check-in should be at the API/interface level
+- low-risk service and validation work proceeds with less friction
+- any remaining check-in happens at the API/interface layer
 
-After the run, export again:
+After the run:
 
 ```bash
 sc observe export --session-id <SESSION_2_ID> --out .sc/exports/session2
 ```
 
-## Close the demo
+## Part 5: observability close
 
-Show one or two observability commands:
+Show one command. Prefer the report:
 
 ```bash
 sc observe report
-sc observe traces --limit 10
 ```
 
-If you want one deeper view:
+What this proves:
+- the interaction is fully instrumented
+- model-initiated and policy-initiated oversight are distinguishable
+- the run is exportable for later analysis
 
-```bash
-sc observe checkin-stats
-```
-
-## What the audience should take away
+## Audience takeaway
 
 Before coding:
-- Smart Coder can compile freeform natural-language rules into either hard constraints or behavioral guidance
-- hard constraints and soft guidance are deliberately separated
+- Smart Coder can compile freeform rules into hard constraints or softer behavioral guidance
 
 Session 1:
-- the model is spec-aware
-- the model can initiate a useful architectural check-in
+- Smart Coder is grounded in an explicit task contract
+- the model can issue a useful API-level check-in
 - the CLI still governs the risky surface
 
 Session 2:
-- the system did not just store traces; it reused them
-- the previous preference changed how the model and policy behaved
-- autonomy increased selectively, not blindly
+- prior feedback changes future behavior
+- autonomy increases selectively, not blindly
+- the adaptive part is the point; everything else supports that moment
 
 ## Evidence to keep
 
@@ -176,16 +166,17 @@ sc observe export --session-id <SESSION_2_ID> --out .sc/exports/session2
 ```
 
 Capture these screenshots:
-- one `sc rules add ...` hard constraint example
-- one `sc rules add ...` behavioral-guideline example
+- one hard-rule compilation example
+- one guidance-rule compilation example
 - the spec-aware intent summary
 - the model-initiated architectural check-in
 - `sc observe preferences` before session 2
-- one observability close (`sc observe report` or `sc observe traces --limit 10`)
+- one observability close
 
-Small numbers to pull into the paper:
-- rules compiled to hard constraints
-- rules compiled to behavioral guidance
-- model-initiated check-ins in session 1
-- policy-initiated check-ins in session 1
-- total check-ins in session 2
+Evidence to pull into the paper:
+- one example of a hard-rule compilation
+- one example of a guidance-rule compilation
+- whether session 1 completed successfully with verification passing
+- model-initiated vs policy-initiated check-ins in session 1
+- whether session 2 required fewer interruptions than session 1
+- one exported bundle + trace CSV proving the run is fully instrumented
