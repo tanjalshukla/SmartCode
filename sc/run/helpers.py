@@ -38,6 +38,12 @@ class SpecContext:
     sha256: str
 
 
+@dataclass(frozen=True)
+class AutonomyHistoryContext:
+    quantitative: str | None = None
+    qualitative: str | None = None
+
+
 def _append_file_context(
     session: ClaudeSession,
     files: list[str],
@@ -251,6 +257,196 @@ def _apply_feedback_learning(
     if guidance_prefix:
         session.add_memory_note(f"{guidance_prefix}: {feedback_text}")
     return learned
+
+
+def _semantic_autonomy_rationale(
+    *,
+    trust_db: TrustDB,
+    repo_root: str,
+    stage: str,
+    task: str,
+    files: list[str],
+    policies: dict[str, PolicyDecision],
+    client: ClaudeClient | None,
+    spec_text: str | None = None,
+) -> str | None:
+    """Ask the model for one concise rationale for an already-approved action."""
+    if not client or not files:
+        return None
+
+    from .ui import _user_friendly_reason
+
+    policy_summaries: list[str] = []
+    for path in files:
+        policy = policies.get(path)
+        if policy is None:
+            continue
+        reason = _user_friendly_reason(policy)
+        if reason:
+            policy_summaries.append(f"{path}: {reason}")
+        elif policy.reasons:
+            policy_summaries.append(f"{path}: {policy.reasons[0]}")
+        else:
+            policy_summaries.append(f"{path}: {policy.action}")
+
+    behavioral_guidelines = [
+        item.guideline
+        for item in trust_db.relevant_behavioral_guidelines(
+            repo_root,
+            query_text=task,
+            spec_text=spec_text,
+            limit=4,
+        )
+    ]
+    feedback_snippets = trust_db.relevant_feedback_snippets(
+        repo_root,
+        query_text=task,
+        spec_text=spec_text,
+        limit=3,
+    )
+    logic_notes = [
+        item.note
+        for item in trust_db.relevant_logic_notes(
+            repo_root,
+            query_text=task,
+            spec_text=spec_text,
+            limit=2,
+        )
+    ]
+
+    try:
+        result = client.generate_autonomy_rationale(
+            stage=stage,
+            task=task,
+            files=files,
+            policy_summaries=policy_summaries,
+            behavioral_guidelines=behavioral_guidelines,
+            feedback_snippets=feedback_snippets,
+            logic_notes=logic_notes,
+        )
+    except Exception:
+        return None
+    return result.rationale
+
+
+def _autonomy_history_context(
+    *,
+    trust_db: TrustDB,
+    repo_root: str,
+    stage: str,
+    task: str,
+    files: list[str],
+    histories: dict[str, PolicyHistory],
+    policies: dict[str, PolicyDecision],
+    spec_text: str | None = None,
+) -> AutonomyHistoryContext | None:
+    """Build a compact developer-facing summary of prior signals behind reduced friction."""
+    if not files:
+        return None
+
+    lease_count = 0
+    total_approvals = 0
+    total_denials = 0
+    review_values_sec: list[float] = []
+    for path in files:
+        policy = policies.get(path)
+        if policy is not None and any(
+            reason.startswith("active read lease") or reason.startswith("active write lease")
+            for reason in policy.reasons
+        ):
+            lease_count += 1
+
+        history = histories.get(path)
+        if history is None:
+            continue
+        total_approvals += history.approvals
+        total_denials += history.denials
+        if history.avg_response_ms is not None:
+            review_values_sec.append(history.avg_response_ms / 1000.0)
+
+    if lease_count == 0 and total_approvals == 0 and total_denials == 0:
+        return None
+
+    access_label = "read" if stage == "read" else "write"
+    parts: list[str] = []
+    if lease_count:
+        parts.append(f"reused prior {access_label} access on {lease_count}/{len(files)} files")
+    parts.append(f"prior approvals {total_approvals}")
+    parts.append(f"prior denials {total_denials}")
+    if review_values_sec:
+        avg_review = sum(review_values_sec) / len(review_values_sec)
+        parts.append(f"avg review {avg_review:.1f}s")
+    quantitative = "; ".join(parts)
+
+    qualitative: str | None = None
+    feedback_snippets = trust_db.relevant_feedback_snippets(
+        repo_root,
+        query_text=task,
+        spec_text=spec_text,
+        limit=1,
+    )
+    if feedback_snippets:
+        qualitative = f"guidance: {feedback_snippets[0]}"
+    else:
+        guidelines = trust_db.relevant_behavioral_guidelines(
+            repo_root,
+            query_text=task,
+            spec_text=spec_text,
+            limit=1,
+        )
+        if guidelines:
+            qualitative = f"guidance: {guidelines[0].guideline}"
+        else:
+            logic_notes = trust_db.relevant_logic_notes(
+                repo_root,
+                query_text=task,
+                spec_text=spec_text,
+                limit=1,
+            )
+            if logic_notes:
+                qualitative = f"related note: {logic_notes[0].note}"
+
+    return AutonomyHistoryContext(
+        quantitative=quantitative,
+        qualitative=qualitative,
+    )
+
+
+def _approved_action_context(
+    *,
+    trust_db: TrustDB,
+    repo_root: str,
+    stage: str,
+    task: str,
+    files: list[str],
+    histories: dict[str, PolicyHistory],
+    policies: dict[str, PolicyDecision],
+    client: ClaudeClient | None,
+    spec_text: str | None = None,
+) -> tuple[AutonomyHistoryContext | None, str | None]:
+    """Return compact history context and a short rationale for auto-approved work."""
+    return (
+        _autonomy_history_context(
+            trust_db=trust_db,
+            repo_root=repo_root,
+            stage=stage,
+            task=task,
+            files=files,
+            histories=histories,
+            policies=policies,
+            spec_text=spec_text,
+        ),
+        _semantic_autonomy_rationale(
+            trust_db=trust_db,
+            repo_root=repo_root,
+            stage=stage,
+            task=task,
+            files=files,
+            policies=policies,
+            client=client,
+            spec_text=spec_text,
+        ),
+    )
 
 
 def _capture_logic_notes(

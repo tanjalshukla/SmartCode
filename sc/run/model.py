@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """Model interaction helpers for run flow (check-ins, phase changes, update retries)."""
 
+import textwrap
 import time
 from pathlib import Path
 
@@ -18,7 +19,7 @@ from ..session import ClaudeSession
 from ..session_feedback import SessionFeedback
 from ..trust_db import TrustDB
 from .helpers import SpecContext, StudyContext, _apply_feedback_learning, _build_patch_from_updates
-from .ui import _show_system_prompt
+from .ui import _model_status, _show_system_prompt
 
 
 def _refresh_session_context(session: ClaudeSession, feedback: SessionFeedback) -> None:
@@ -109,12 +110,15 @@ def _handle_model_checkin(
     print(f"Type: {check_in.check_in_type}")
     print(f"Reason: {check_in.reason}")
     if check_in.assumptions:
-        print("Model assumptions:")
-        for item in check_in.assumptions:
-            print(f"  - {item}")
+        assumptions = "; ".join(check_in.assumptions[:2])
+        if len(check_in.assumptions) > 2:
+            assumptions += f"; +{len(check_in.assumptions) - 2} more"
+        print(f"Assumptions: {assumptions}")
     if check_in.recommendation:
         print(f"Recommendation: {check_in.recommendation}")
-    print(check_in.content)
+    compact_content = textwrap.shorten(" ".join(check_in.content.split()), width=220, placeholder="...")
+    if compact_content and not check_in.options:
+        print(f"Context: {compact_content}")
 
     response_text = ""
     prompt_started = time.time()
@@ -123,7 +127,8 @@ def _handle_model_checkin(
     if check_in.options:
         print("Options:")
         for idx, option in enumerate(check_in.options, 1):
-            print(f"  {idx}. {option}")
+            display_option = textwrap.shorten(" ".join(option.split()), width=140, placeholder="...")
+            print(f"  {idx}. {display_option}")
         choices = [str(i) for i in range(1, len(check_in.options) + 1)] + ["d"]
         pick = Prompt.ask("Select option or deny (d)", choices=choices, default=choices[0])
         if pick == "d":
@@ -246,15 +251,15 @@ def _generate_updates_with_repair(
                 spec_digest=spec_context.digest if spec_context else None,
             )
             _refresh_session_context(session, feedback)
-            print("[cyan]Calling model for file updates...[/cyan]")
-            updates = client.generate_updates(
-                session,
-                declaration,
-                file_context=file_context,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                repair_hint=update_error,
-            )
+            with _model_status("updates"):
+                updates = client.generate_updates(
+                    session,
+                    declaration,
+                    file_context=file_context,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    repair_hint=update_error,
+                )
         except ModelCheckInRequired as exc:
             model_checkins += 1
             if model_checkins > max_model_checkins:

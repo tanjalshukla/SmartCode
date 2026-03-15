@@ -1,173 +1,222 @@
-# Demo Flow
+# Reproducing the Hedwig Demo Video
 
-This is the final 5-minute demo script.
+This file documents the exact flow used for the public Hedwig demo.
 
-The story is:
-1. Smart Coder distinguishes hard governance from softer behavioral preferences.
-2. The coding loop is grounded in a task contract (`--spec`).
-3. The model can stop on a meaningful API tradeoff instead of guessing.
-4. A preference from session 1 changes behavior in session 2.
+The demo is intentionally short and shows four things:
 
-Do not reset between session 1 and session 2.
+1. Freeform rules become either hard constraints or behavioral guidance.
+2. Session 1 produces a model-initiated design check-in.
+3. Session 2 reuses prior interaction history to reduce friction.
+4. The full run is observable through `hw observe report`.
 
-## 5-minute timing
+## Demo Structure
 
-1. `0:00-0:25` - add one hard rule and one behavioral rule
-2. `0:25-2:10` - session 1: spec-aware plan + model-initiated API check-in
-3. `2:10-3:45` - session 2: semantically related follow-up with fewer interruptions
-4. `3:45-5:00` - observability close
+- Session 1: add a summary endpoint
+- Session 2: extend that endpoint with an optional priority filter
 
-## Off-camera setup
+The important behavior is cross-session adaptation, not the size of the
+code change.
 
-Run from the demo repo:
+## Off-Camera Setup
+
+Run from this directory:
 
 ```bash
 cd demo_task_api
-git init   # one-time; makes this fixture the Smart Coder repo root
-git add .
-git commit -m "Initial demo fixture"   # optional but useful for a clean baseline
-git rev-parse --show-toplevel   # should print .../demo_task_api
-sc reset --yes
-sc rules constraints-clear --all
-sc rules guidelines-clear --all
-sc config set-mode balanced
+git init
+git restore task_api/api.py task_api/service.py
+
+export AWS_PROFILE=dev
+export AWS_REGION=us-east-1
+export AWS_DEFAULT_REGION=us-east-1
+export AWS_SDK_LOAD_CONFIG=1
+export SA_MODEL_ID='arn:aws:bedrock:us-east-1:676534553170:inference-profile/global.anthropic.claude-sonnet-4-20250514-v1:0'
+export VERIFY_CMD="/Users/tanjalshukla/dynamic_autonomy_mvp/.venv/bin/python -m pytest tests -q"
+
+aws sso login --profile dev
+hw init --model-id "$SA_MODEL_ID" --region us-east-1
+hw reset --yes
+hw rules constraints-clear --all
+hw rules guidelines-clear --all
 ```
 
-Assume the verification command has already been configured once by the operator as:
+Before filming, confirm the fixture is at the pre-session1 baseline:
 
 ```bash
-sc config set-verification-cmd "python -m pytest tests -q"
+rg -n "summary_handler|get_task_summary" task_api/api.py task_api/service.py || true
 ```
 
-That setup is operational, not part of the on-camera story.
-
-## Part 1: rule authoring
-
-Show these two commands on camera:
+That command should print nothing. If it prints anything, run:
 
 ```bash
-sc config set-mode balanced
-sc rules add "Never modify files under locked/."
-sc rules add "For routine validation and service-layer changes, continue autonomously; only check in for API, schema, or security changes."
+git restore task_api/api.py task_api/service.py
 ```
 
-What this proves:
-- Smart Coder accepts freeform natural-language rules
-- one rule becomes a deterministic CLI-enforced constraint
-- one rule becomes prompt-level behavioral guidance
-- the system separates task contract, hard governance, and soft preference
+## Guidance to Paste During Session 1
 
-Script:
-- the first rule is a hard boundary on a protected path
-- the second rule is a softer preference about interruption style
-- this is the distinction between governance and adaptive conditioning
-- do not linger here; the point is classification, not rule administration
-
-## Part 2: session 1
-
-```bash
-sc run \
-"Read task_api/api.py, task_api/service.py, and docs/task_api_spec.md. Add a new `/tasks/summary` endpoint that returns task counts by status while preserving the existing list response envelope and all public handler signatures. If there is an API design tradeoff, stop and check in with assumptions and options." \
---spec docs/task_api_spec.md \
---show-intent
-```
-
-Script responses:
-- approve the reads
-- approve the plan
-- if the model asks whether to extend the existing list route or add a dedicated summary path, choose the dedicated path and respond:
+When Hedwig asks for optional architectural guidance, paste exactly:
 
 ```text
-Add a dedicated summary path. Do not change the existing list response envelope or handler signatures. Continue autonomously for low-risk internal changes; only check in for API, signature, schema, or security changes.
+Use the nested object response. Preserve the existing response envelope and all public handler signatures. Make the new summary handler follow the same input style as existing read handlers. Prefer fewer check-ins. For low-risk internal changes, continue autonomously. Only check in for API, signature, schema, or security changes.
 ```
 
-- approve the apply step
+## On-Camera Flow
 
-What this proves:
-- the plan is grounded in the spec, not just the prompt
-- the model surfaces a real API design tradeoff instead of silently guessing
-- the user can explicitly calibrate future check-ins
-- reviewers can understand the task immediately: add one summary endpoint without breaking the existing API
-
-After the run:
+### 1. Add the two startup rules
 
 ```bash
-sc observe export --session-id <SESSION_1_ID> --out .sc/exports/session1
+hw rules add "Never modify files under locked/."
+hw rules add "For routine backend changes, reuse existing validation helpers and avoid creating new files unless clearly necessary."
 ```
 
-## Part 3: session 2
+Then set the starting mode and verification command:
 
 ```bash
-sc run \
-"Using the same spec, extend the new `/tasks/summary` flow to accept an optional `priority` filter while preserving the existing list endpoint, response envelopes, and handler signatures. Reuse the existing priority validation logic, do not create new files, and continue autonomously for low-risk internal changes." \
+hw config set-mode balanced
+hw config set-verification-cmd "$VERIFY_CMD"
+```
+
+What this shows:
+
+- the first rule becomes a hard constraint
+- the second rule becomes softer behavioral guidance
+- Hedwig starts from a balanced cold-start mode
+- verification is explicitly configured
+
+### 2. Session 1
+
+Run:
+
+```bash
+hw run \
+'Read task_api/api.py, task_api/service.py, and docs/task_api_spec.md. Add a new /tasks/summary endpoint that returns task counts by status while preserving the existing list response envelope and all public handler signatures. If there is an API design tradeoff, stop and check in with assumptions and options.' \
 --spec docs/task_api_spec.md \
 --show-intent
 ```
 
-Expected outcome:
-- fewer unnecessary check-ins than session 1
-- preserved response envelopes
-- preserved handler signatures
-- the model recognizes this as a semantically related follow-up to the earlier summary-endpoint work
-- the session bootstrap line should show `history=loaded`
-- low-risk follow-up work proceeds with less friction
+Expected interaction:
 
-After the run:
+- Hedwig prints `Session mode balanced`
+- Hedwig asks to read:
+  - `task_api/api.py`
+  - `task_api/service.py`
+  - `docs/task_api_spec.md`
+- choose `r` at the read prompt:
 
-```bash
-sc observe export --session-id <SESSION_2_ID> --out .sc/exports/session2
+```text
+Approve once (a), approve & remember (r), or deny (d) [a/r/d]:
 ```
 
-## Part 4: observability close
+- Hedwig raises a model-initiated planning check-in about handler style
+- choose option `1`
+- paste the guidance text above
+- approve the plan with `a`
+- approve the patch with `a`
 
-Show one command. Prefer the report:
+Expected session-1 result:
 
-```bash
-sc observe report
-```
+- changes applied to:
+  - `task_api/api.py`
+  - `task_api/service.py`
+- verification passed
+- end-of-run summary shows one check-in during the run
 
-What this proves:
-- the interaction is fully instrumented
-- model-initiated and policy-initiated oversight are distinguishable
-- the run is exportable for later analysis
+### 3. Optional code reveal after session 1
 
-## Audience takeaway
+If you want to show the change in the editor, open:
 
-Before coding:
-- Smart Coder can compile freeform rules into hard constraints or softer behavioral guidance
+- `task_api/api.py`
+- `task_api/service.py`
 
-Session 1:
-- Smart Coder is grounded in an explicit task contract
-- the model can issue a useful API-level check-in
-- the CLI still governs the risky surface
+### 4. Session 2
 
-Session 2:
-- prior interaction history changes future behavior
-- autonomy increases selectively, not blindly
-- the adaptive part is the point; everything else supports that moment
-
-## Evidence to keep
-
-Export both sessions:
+Run:
 
 ```bash
-sc observe export --session-id <SESSION_1_ID> --out .sc/exports/session1
-sc observe export --session-id <SESSION_2_ID> --out .sc/exports/session2
+hw run \
+'Using the same spec, extend the new /tasks/summary flow to accept an optional priority filter while preserving the existing list endpoint, response envelopes, and the already-added summary-handler signature. Work only in task_api/api.py and task_api/service.py, reuse the existing service-layer priority validation behavior, do not create new files, and continue autonomously for low-risk internal changes.' \
+--spec docs/task_api_spec.md \
+--show-intent
 ```
 
-Capture these screenshots:
-- one hard-rule compilation example
-- one guidance-rule compilation example
-- the spec-aware intent summary
-- the model-initiated architectural check-in
-- the `history=loaded` bootstrap line at session 2 start
-- one observability close
+Expected interaction:
 
-Evidence to pull into the paper:
-- one example of a hard-rule compilation
-- one example of a guidance-rule compilation
-- whether session 1 completed successfully with verification passing
-- model-initiated vs policy-initiated check-ins in session 1
-- whether session 2 required fewer interruptions than session 1
-- whether session 2 started from loaded history rather than cold start
-- one exported bundle + trace CSV proving the run is fully instrumented
+- Hedwig prints `Session mode balanced`
+- reads are auto-approved from remembered access
+- the reduced-friction block appears immediately:
+  - `Reduced friction (read): ...`
+  - `Retrieved guidance: ...`
+  - `Autonomy rationale (read): ...`
+- the retrieved guidance should reflect the pasted session-1 guidance, not just the broad startup rule
+- a plan checkpoint still appears; approve it with `a`
+- the apply stage should auto-approve the patch and flag it for review rather than prompting again
+
+Expected session-2 result:
+
+- patch updates:
+  - `task_api/api.py`
+  - `task_api/service.py`
+- Hedwig prints:
+  - `Apply approved. Flagged for review:`
+  - both files
+  - `Verification passed.`
+
+### 5. Optional code reveal after session 2
+
+If you want to show the follow-up change in the editor, open:
+
+- `task_api/api.py`
+- `task_api/service.py`
+
+### 6. Observability close
+
+Run:
+
+```bash
+hw observe report
+```
+
+Expected highlights:
+
+- model-initiated and policy-initiated oversight are separated
+- verification passed
+- the interaction is fully traced
+
+Point to:
+
+- `model_proactive`
+- `policy`
+
+## Best Moments to Capture
+
+Use these for screenshots or the video pause:
+
+1. Session 1:
+   - the model check-in with the two interface options
+2. Session 2:
+   - `Reduced friction (read): ...`
+   - `Retrieved guidance: ...`
+   - `Autonomy rationale (read): ...`
+3. Observability close:
+   - `model_proactive`
+   - `policy`
+
+## If You Need to Reset and Rerun
+
+```bash
+git restore task_api/api.py task_api/service.py
+hw reset --yes
+hw rules constraints-clear --all
+hw rules guidelines-clear --all
+```
+
+## Troubleshooting
+
+- If session 1 says the task is already complete, the fixture is not at
+  the pre-session1 baseline. Run the reset block above and confirm that
+  `task_api/api.py` does not contain `summary_handler`.
+- If session 2 does not mention `priority`, stop and rerun from the
+  clean baseline. The intended follow-up change updates both
+  `task_api/api.py` and `task_api/service.py`.
+- If Bedrock authentication fails, rerun `aws sso login --profile dev`
+  before restarting the demo flow.

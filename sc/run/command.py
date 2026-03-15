@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Main `sc run` orchestration entrypoint."""
+"""Main `hw run` orchestration entrypoint."""
 
 import hashlib
 import json
@@ -36,6 +36,7 @@ from .read_stage import _process_read_request
 from .traces import _record_traces
 from .ui import (
     _confirm_create_files,
+    _model_status,
     _prompt_plan_checkpoint,
     _render_intent_summary,
     _show_system_prompt,
@@ -92,13 +93,13 @@ def _resolve_intent_declaration(
                 spec_digest=spec_context.digest if spec_context else None,
             )
             _refresh_session_context(session, feedback)
-            print("[cyan]Calling model for intent...[/cyan]")
-            response = client.declare_intent(
-                session,
-                task=task,
-                max_tokens=config.max_tokens,
-                temperature=config.temperature,
-            )
+            with _model_status("intent"):
+                response = client.declare_intent(
+                    session,
+                    task=task,
+                    max_tokens=config.max_tokens,
+                    temperature=config.temperature,
+                )
         except Exception as exc:
             print("[red]Failed to obtain valid intent declaration.[/red]")
             print(str(exc))
@@ -397,17 +398,7 @@ def run(
         study_task_id=task_id,
         autonomy_mode=profile.mode,
     )
-    trace_count = trust_db.trace_count(repo_root_str)
-    constraints = trust_db.list_constraints(repo_root_str)
-    guidelines = trust_db.list_behavioral_guidelines(repo_root_str)
-    history_state = "loaded" if trace_count else "cold-start"
-    print(
-        f"[bold]Session bootstrap[/bold] "
-        f"history={history_state}, "
-        f"mode={profile.mode}, "
-        f"constraints={'loaded' if constraints else 'none'}, "
-        f"guidelines={'loaded' if guidelines else 'none'}"
-    )
+    print(f"[bold]Session mode[/bold] {profile.mode}")
     run_session_id = uuid4().hex
     threshold = permanent_threshold if permanent_threshold is not None else config.permanent_approval_threshold
     client = ClaudeClient(model_id=config.model_id, region=config.aws_region)

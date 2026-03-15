@@ -1,41 +1,34 @@
-# Smart Coder
+# Hedwig
 
-Smart Coder (`sc`) is a governance-first coding agent CLI. The model proposes; the CLI enforces.
+Hedwig (`hw`) is a governance-first coding agent CLI. The model can
+read, plan, ask for guidance, and propose code changes. The local CLI
+decides what is actually allowed, what requires review, and what gets
+verified.
 
-Core design:
-- untrusted model with strict JSON protocol
-- local policy and constraint enforcement
-- trace-backed adaptive autonomy
-- explicit read/apply checkpoints when risk is high
+The point of the project is not full autonomy. It is selective,
+inspectable reduction in friction: routine work should get smoother as
+the system learns from prior interaction, while risky work remains
+governed.
 
-## Why It Exists
+## What Hedwig Does
 
-Most coding agents force a bad tradeoff: either approve everything manually, or trust the agent too broadly. Smart Coder is built to study and improve that boundary. It learns from developer interaction history, but keeps all authority in the local CLI:
+- Compiles freeform developer rules into either hard constraints or
+  softer behavioral guidance.
+- Separates model-initiated check-ins from policy-initiated check-ins.
+- Uses interaction traces to adapt later approval behavior.
+- Retrieves relevant prior guidance back into later tasks.
+- Runs verification after approved changes.
+- Exports traces and session bundles for later analysis.
 
-- the model can request reads, propose plans, suggest check-ins, and generate updates
-- the CLI decides what is actually read, written, verified, or blocked
-- every decision is traced so autonomy can adapt over time and be studied later
+## Install
 
-For architecture, internals, and future work, see `SPEC.md`.
-
-## Research Inputs
-
-Smart Coder is informed by a small set of papers and practitioner findings rather than a single source:
-
-- *Overseeing Agents Without Constant Oversight: Challenges and Opportunities*
-- *CowCorpus* (Huq et al., 2025, arXiv 2602.17588)
-- Grunde-McLaughlin et al. (2025, arXiv 2602.16844)
-- *PAHF* (Liang et al., 2026, arXiv 2602.16173)
-
-The README stays focused on setup and usage. `SPEC.md` contains the architecture details, what we took from these papers, and what remains unimplemented.
-
-## Prerequisites
+Requirements:
 
 - Python 3.11+
-- AWS IAM Identity Center (SSO) configured
-- Bedrock access to a Claude inference profile (ID/ARN)
+- AWS IAM Identity Center (SSO) configured locally
+- Bedrock access to a Claude inference profile
 
-## Setup
+Setup:
 
 ```bash
 python -m venv .venv
@@ -44,120 +37,79 @@ python -m pip install --upgrade pip setuptools wheel
 pip install --no-build-isolation -e .
 ```
 
-After install, use `sc` as the CLI entry point. `python -m sc` still works.
+The primary CLI entry point is:
+
+```bash
+hw
+```
+
+All public docs use `hw`. The older `sc` command remains available as a
+compatibility alias.
 
 ## Quick Start
 
 ```bash
-sc init --model-id <inference-profile-arn> --region us-east-1
-sc doctor --model-id <inference-profile-arn> --region us-east-1
-sc run "Add a small unit test for function X in foo.py" --show-intent
+aws sso login --profile <PROFILE>
+hw init --model-id <inference-profile-arn> --region us-east-1
+hw doctor --model-id <inference-profile-arn> --region us-east-1
+hw run "Add a small unit test for function X in foo.py" --show-intent
 ```
 
-This creates local state in `.sc/config.json` and `.sc/trust.db`.
+Local Hedwig state lives in:
 
-## Command Groups
+- `.sc/config.json`
+- `.sc/trust.db`
 
-- `sc config ...` config updates (`set-mode`, `set-verification-cmd`)
-- `sc rules ...` import/manage hard constraints and guidelines
-- `sc observe ...` traces, leases, explainability, stats, preferences
-
-## Core Workflows
-
-Run with intent visibility:
+## Core Commands
 
 ```bash
-sc run "Update foo.py and add tests" --show-intent
+hw run "Update foo.py and add tests" --show-intent
+hw rules add "Never modify files under config/prod/."
+hw rules list
+hw config set-mode balanced
+hw observe report
+hw observe traces --limit 20
+hw observe export --out .sc/exports
 ```
 
-Inspect live policy state:
+## Demo Video Reproduction
 
-```bash
-sc observe leases
-sc observe traces --limit 20
-sc observe report
-```
+The public demo fixture lives in [`demo_task_api/`](demo_task_api).
 
-Import structured rules from AGENTS/CLAUDE-style files:
+Start here:
 
-```bash
-sc rules import path/to/RULES.md
-sc rules constraints
-sc rules guidelines
-```
+- [`demo_task_api/DEMO_FLOW.md`](demo_task_api/DEMO_FLOW.md) — exact
+  steps to reproduce the filmed two-session demo
+- [`demo_task_api/README.md`](demo_task_api/README.md) — what the demo
+  fixture contains
 
-Add a freeform natural-language rule. Smart Coder compiles it into enforced constraints and/or prompt-level guidance:
+The demo shows:
 
-```bash
-sc rules add "Never modify files under `config/prod/*`."
-sc rules add "Only check in for API or schema changes."
-```
+1. Freeform rule compilation into hard constraints vs. behavioral
+   guidance.
+2. A model-initiated architectural check-in during session 1.
+3. Reduced friction plus retrieved prior guidance during session 2.
+4. Exportable observability through `hw observe report`.
 
-Set autonomy mode:
+## Repository Layout
 
-```bash
-sc config set-mode balanced
-sc config set-mode milestone
-```
+- [`sc/`](sc) — Hedwig CLI implementation, policy logic, prompts, and
+  runtime orchestration
+- [`demo_task_api/`](demo_task_api) — the small reproducible fixture used
+  in the public demo
+- [`docs/READING_ORDER.md`](docs/READING_ORDER.md) — fastest path
+  through the codebase
+- [`SPEC.md`](SPEC.md) — architecture notes, policy details, and
+  research framing
 
-Reset learned autonomy preferences:
+## Architecture Notes
 
-```bash
-sc observe preferences-clear --yes
-```
-
-Export the latest session bundle for analysis:
-
-```bash
-sc observe export --out .sc/exports
-```
-
-## Enforcement Semantics
-
-- Constraint precedence: `always_deny` > `always_check_in` > `always_allow`
-- Phase gates:
-  - research: no writes
-  - planning: markdown-only writes
-  - implementation/review: writes allowed under policy
-- Apply is all-or-nothing: writes are staged and atomically replaced per file; failures abort with cleanup.
+For implementation details, policy logic, and the research-oriented
+architecture notes, see [`SPEC.md`](SPEC.md).
 
 ## Testing
 
 ```bash
-.venv/bin/python -m pytest tests -q
+PYTHONPATH=. .venv/bin/python -m pytest tests -q
+PYTHONPATH=demo_task_api .venv/bin/python -m pytest demo_task_api/tests -q
 ```
-
-## Demo
-
-The demo target repo is `demo_task_api/`.
-
-- Two-session demo flow: `demo_task_api/DEMO_FLOW.md`
-- Operator steps: `docs/OPERATOR_RUNBOOK.md`
-
-### Install and Run the Demo
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip setuptools wheel
-pip install --no-build-isolation -e .
-export AWS_PROFILE=<PROFILE>
-export AWS_REGION=us-east-1
-export AWS_DEFAULT_REGION=us-east-1
-export AWS_SDK_LOAD_CONFIG=1
-sc doctor --model-id <INFERENCE_PROFILE_ARN> --region us-east-1
-cd demo_task_api
-git init   # one-time, if the demo fixture is not already its own repo
-git rev-parse --show-toplevel   # should print .../demo_task_api
-sc reset --yes
-sc rules constraints-clear --all
-sc rules guidelines-clear --all
-sc config set-mode balanced
-sc config set-verification-cmd "python -m pytest tests -q"
-```
-
-## Notes
-
-- Bedrock model ID can be set via `--model-id` or `SA_MODEL_ID`.
-- Read context is truncated by `read_max_chars` in `.sc/config.json`.
-- Numeric policy knobs remain in `.sc/config.json`, but the normal user-facing control is `autonomy_mode`.

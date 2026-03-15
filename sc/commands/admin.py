@@ -11,6 +11,7 @@ from rich.prompt import Prompt
 from rich.table import Table
 
 from ..agent_client import ASK_SYSTEM_PROMPT, ClaudeClient, RUN_SYSTEM_PROMPT
+from ..autonomy import preferences_from_model_payload
 from ..cli_shared import read_file_context as _read_file_context
 from ..cli_shared import resolve_config as _resolve_config
 from ..commands.shared import open_trust_db, require_repo_root, try_repo_root
@@ -25,6 +26,7 @@ from ..config import (
 from ..constraints import ParseResult, parse_constraints_file
 from ..session import ClaudeSession
 from ..trust_db import HardConstraint
+from ..run.ui import _model_status
 
 
 def _resolve_config_or_exit(
@@ -141,7 +143,7 @@ def init(
     config_path = save_config(repo_root, config)
     open_trust_db(repo_root)
 
-    print("[green]Initialized Semantic Autonomy config.[/green]")
+    print("[green]Initialized Hedwig config.[/green]")
     print(f"Config: {config_path}")
 
 
@@ -153,7 +155,7 @@ def set_threshold(
 
     config = load_config(repo_root)
     if config is None:
-        print("[red]Config not found. Run `sc init` first.[/red]")
+        print("[red]Config not found. Run `hw init` first.[/red]")
         raise typer.Exit(code=1)
     if threshold < 0:
         print("[red]Threshold must be non-negative.[/red]")
@@ -173,7 +175,7 @@ def set_mode(
     repo_root = require_repo_root()
     config = load_config(repo_root)
     if config is None:
-        print("[red]Config not found. Run `sc init` first.[/red]")
+        print("[red]Config not found. Run `hw init` first.[/red]")
         raise typer.Exit(code=1)
     normalized = normalize_autonomy_mode(mode)
     if normalized != mode.strip().lower():
@@ -196,7 +198,7 @@ def set_verification_cmd(
 
     config = load_config(repo_root)
     if config is None:
-        print("[red]Config not found. Run `sc init` first.[/red]")
+        print("[red]Config not found. Run `hw init` first.[/red]")
         raise typer.Exit(code=1)
 
     if clear:
@@ -267,13 +269,14 @@ def add_rule(
     trust_db = open_trust_db(repo_root)
     config = _resolve_config_or_exit(repo_root, model_id, region)
     try:
-        parsed = _compile_rule_with_model(
-            repo_root=repo_root,
-            rule=rule,
-            source=source,
-            model_id=config.model_id,
-            region=config.aws_region,
-        )
+        with _model_status("rules"):
+            parsed = _compile_rule_with_model(
+                repo_root=repo_root,
+                rule=rule,
+                source=source,
+                model_id=config.model_id,
+                region=config.aws_region,
+            )
     except Exception as exc:
         print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1)
@@ -316,8 +319,18 @@ def add_rule(
         source=source,
         guidelines=parsed.behavioral_guidelines,
     )
+    with _model_status("preferences"):
+        learned_preferences = _learn_preferences_from_guidelines(
+            trust_db=trust_db,
+            repo_root=repo_root,
+            guidelines=parsed.behavioral_guidelines,
+            model_id=config.model_id,
+            region=config.aws_region,
+        )
     print(f"[green]Added {inserted} hard constraint(s).[/green]")
     print(f"[green]Added {guideline_count} behavioral guideline(s).[/green]")
+    if learned_preferences:
+        print(f"[green]Updated adaptive guidance:[/green] {', '.join(learned_preferences)}")
 
 
 def _repo_inventory(repo_root: Path, *, limit: int = 80) -> list[str]:
@@ -360,6 +373,27 @@ def _compile_rule_with_model(
     )
 
 
+def _learn_preferences_from_guidelines(
+    *,
+    trust_db,
+    repo_root: Path,
+    guidelines: list[str],
+    model_id: str,
+    region: str,
+) -> list[str]:
+    learned: list[str] = []
+    if not guidelines:
+        return learned
+    client = ClaudeClient(model_id=model_id, region=region)
+    for guideline in guidelines:
+        payload = client.summarize_autonomy_feedback(guideline)
+        if payload is None:
+            continue
+        inferred = preferences_from_model_payload(payload)
+        learned.extend(trust_db.merge_autonomy_preferences(str(repo_root), inferred))
+    return list(dict.fromkeys(learned))
+
+
 _CONSTRAINT_LABELS: dict[str, str] = {
     "always_deny": "always deny",
     "always_check_in": "always check in",
@@ -386,7 +420,7 @@ def rules_list(
     guidelines_list = trust_db.list_behavioral_guidelines(repo_root_str)
 
     if not constraints_list and not guidelines_list:
-        print("[yellow]No rules found. Use `sc rules import <file>` to add rules.[/yellow]")
+        print("[yellow]No rules found. Use `hw rules import <file>` to add rules.[/yellow]")
         return
 
     if json_out:

@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "semantic-autonomy"
+name = "hedwig-cli"
 version = "0.1.0"
-description = "Governance-first coding agent CLI with adaptive autonomy."
+description = "Hedwig: a governance-first coding agent CLI with adaptive autonomy."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -17,6 +17,7 @@ dependencies = [
 ]
 
 [project.scripts]
+hw = "sc.cli:app"
 sc = "sc.cli:app"
 
 [tool.setuptools.packages.find]

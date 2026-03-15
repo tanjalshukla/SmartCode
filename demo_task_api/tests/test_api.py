@@ -1,3 +1,6 @@
+import inspect
+
+import task_api.api as api_module
 from task_api.api import create_task_handler, list_tasks_handler, update_task_status_handler
 
 
@@ -25,3 +28,10 @@ def test_update_task_status_rejects_invalid_status() -> None:
     assert status == 400
     assert body["ok"] is False
     assert body["error"]["code"] == "invalid_status"
+
+
+def test_summary_handler_uses_query_convention_if_present() -> None:
+    if not hasattr(api_module, "summary_handler"):
+        return
+    signature = inspect.signature(api_module.summary_handler)
+    assert list(signature.parameters) == ["query"]

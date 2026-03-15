@@ -1,6 +1,6 @@
-# Smart Coder
+# Hedwig
 
-Smart Coder is a local CLI that sits between a developer and an LLM coding agent. Its job is to decide when the agent should continue independently and when it should stop for review.
+Hedwig is a local CLI that sits between a developer and an LLM coding agent. Its job is to decide when the agent should continue independently and when it should stop for review.
 
 The model is untrusted. It can request reads, propose plans, generate edits, and initiate architectural check-ins, but the CLI is the enforcement boundary for every read, write, and verification step.
 
@@ -10,7 +10,7 @@ The system is designed for developers who already supervise and validate agent w
 
 # Part 1: Technical Implementation
 
-This document focuses on architecture, runtime behavior, data flow, and future implementation work. Installation, command-line usage, and operator steps live in `README.md` and `docs/OPERATOR_RUNBOOK.md`.
+This document focuses on architecture, runtime behavior, data flow, and future implementation work. Installation, command-line usage, and operator steps live in `README.md` and `demo_task_api/DEMO_FLOW.md`.
 
 ## Architecture
 
@@ -29,7 +29,7 @@ Either side can trigger a check-in independently. Both are logged with `check_in
                        │ commands, approvals, corrections
                        ▼
 ┌─────────────────────────────────────────────────────┐
-│                  Smart Coder CLI                     │
+│                  Hedwig CLI                     │
 │                                                     │
 │  ┌─────────────┐  ┌──────────────┐  ┌────────────┐ │
 │  │  Governance  │  │   Policy     │  │   Trace    │ │
@@ -49,7 +49,7 @@ Either side can trigger a check-in independently. Both are logged with `check_in
 │         ▼                                            │
 │  ┌──────────────────────────────────────────────┐   │
 │  │   Rules importer                             │   │
-│  │   (`sc rules import ...` -> constraints)     │   │
+│  │   (`hw rules import ...` -> constraints)     │   │
 │  └──────────────────────────────────────────────┘   │
 │  ┌──────────────────────────────────────────────┐   │
 │  │   System prompt builder                      │   │
@@ -180,12 +180,12 @@ The `decision_traces` table is the primary data source for post-study analysis. 
 
 The public interface is intentionally small:
 
-- `sc run` — main governed coding loop
-- `sc ask` — no-write question answering
-- `sc rules ...` — import and inspect constraints/guidelines
-- `sc rules add` — compile a freeform natural-language rule into either enforced constraints or prompt-level guidance
-- `sc observe ...` — traces, exports, explainability, resets
-- `sc config ...` — autonomy mode and verification setup
+- `hw run` — main governed coding loop
+- `hw ask` — no-write question answering
+- `hw rules ...` — import and inspect constraints/guidelines
+- `hw rules add` — compile a freeform natural-language rule into either enforced constraints or prompt-level guidance
+- `hw observe ...` — traces, exports, explainability, resets
+- `hw config ...` — autonomy mode and verification setup
 
 The operator-facing details belong in `README.md`. In this spec, only the behavior of those surfaces matters:
 
@@ -220,7 +220,7 @@ Key modules, by responsibility:
 
 Current tools offer binary autonomy: ask before every edit, or edit automatically. Static config files (CLAUDE.md, .cursorrules) capture preferences the developer can articulate in advance, but most preferences are implicit — they show up as correction patterns, review timing, edit distance, and phase-of-work context.
 
-Recent studies suggest the main bottleneck is not raw model capability but trust infrastructure: when to let the agent continue, when to intervene, and how to turn observed behavior into future calibration. Smart Coder is an attempt to make that boundary explicit and measurable.
+Recent studies suggest the main bottleneck is not raw model capability but trust infrastructure: when to let the agent continue, when to intervene, and how to turn observed behavior into future calibration. Hedwig is an attempt to make that boundary explicit and measurable.
 
 ## The Trace-Prompt Feedback Loop
 
@@ -289,10 +289,10 @@ The key comparison is between static rules and adaptive behavior learned from tr
 
 ## Related Work
 
-- **CowCorpus** motivates the idea that users have stable interaction styles and that oversight behavior can be learned per user. Smart Coder takes the same premise but keeps the adaptation in a separable governance layer rather than retraining the model.
-- **Grunde-McLaughlin et al.** motivate review-quality signals: Smart Coder uses assumptions in check-ins and discounts rubber-stamp approvals instead of treating every approval equally.
-- **PAHF** motivates post-action personalization. Smart Coder adopts the same feedback-driven idea but keeps the memory and adaptation loop outside the model, in the local CLI.
-- **Humans are Missing from AI Coding Agent Research** strengthens the motivation for Smart Coder's study design: oversight quality, steerability, verifiability, and adaptability should be evaluated on realistic human-agent workflows rather than only offline autonomous benchmarks.
+- **CowCorpus** motivates the idea that users have stable interaction styles and that oversight behavior can be learned per user. Hedwig takes the same premise but keeps the adaptation in a separable governance layer rather than retraining the model.
+- **Grunde-McLaughlin et al.** motivate review-quality signals: Hedwig uses assumptions in check-ins and discounts rubber-stamp approvals instead of treating every approval equally.
+- **PAHF** motivates post-action personalization. Hedwig adopts the same feedback-driven idea but keeps the memory and adaptation loop outside the model, in the local CLI.
+- **Humans are Missing from AI Coding Agent Research** strengthens the motivation for Hedwig's study design: oversight quality, steerability, verifiability, and adaptability should be evaluated on realistic human-agent workflows rather than only offline autonomous benchmarks.
 - **Appropriate reliance / scalable oversight / capability security** provide the broader framing: the goal is calibrated reliance, meaningful oversight as capability grows, and explicit scoped authority rather than broad agent trust.
 
 ## Current Status
@@ -324,9 +324,9 @@ This subsection is the single place to look for important things discussed in re
 - **Structured logic-note memory is still lightweight** — the runtime now stores short functionality notes about completed work and retrieves relevant notes into future prompt context, but this remains a shallow local memory layer rather than a deeper semantic representation of prior code logic.
 - **No developer-intent labeling** — approvals, denials, and corrections are recorded, but the system cannot yet distinguish whether a developer objected to the file touched, the implementation approach, the timing of a check-in, or overall code quality.
 - **Deterministic promotion of soft rules** — guidelines can influence prompts, but most are not yet converted into enforceable checks.
-- **Process-rule compilation** — `sc rules add` can currently classify freeform rules into enforced access constraints or prompt-level guidance, but it cannot yet compile deterministic workflow rules such as always running verification before completion.
-- **Unified rule taxonomy across sources** — the system still treats `--spec`, project policy files (`CLAUDE.md` / `AGENTS.md`), and interactive `sc rules add` inputs as partially separate surfaces. A cleaner design would classify all incoming rules into the same canonical buckets: task contract, behavioral guidance, deterministic access constraint, or deterministic process rule.
-- **Model-assisted rules import** — `sc rules import` still relies on deterministic parsing; it should reuse the same model-assisted, line-by-line compilation path as `sc rules add` so each imported rule can be classified as either an enforced constraint or prompt-level guidance.
+- **Process-rule compilation** — `hw rules add` can currently classify freeform rules into enforced access constraints or prompt-level guidance, but it cannot yet compile deterministic workflow rules such as always running verification before completion.
+- **Unified rule taxonomy across sources** — the system still treats `--spec`, project policy files (`CLAUDE.md` / `AGENTS.md`), and interactive `hw rules add` inputs as partially separate surfaces. A cleaner design would classify all incoming rules into the same canonical buckets: task contract, behavioral guidance, deterministic access constraint, or deterministic process rule.
+- **Model-assisted rules import** — `hw rules import` still relies on deterministic parsing; it should reuse the same model-assisted, line-by-line compilation path as `hw rules add` so each imported rule can be classified as either an enforced constraint or prompt-level guidance.
 - **Async delegation mode** — current UX is pair mode; no queue/review workflow yet.
 - **Subagent planner/coder split** — still a research-track idea, not part of the shipped runtime.
 - **Post-hoc correction after approval** — the current system captures denials and inline corrections, but it does not yet let a developer retroactively mark an already-approved change as a negative signal.
@@ -353,9 +353,9 @@ This is the prioritized post-demo backlog.
 ### Priority 2: stronger rule enforcement and explanation
 
 - **Deterministic promotion of soft rules** — promote verifiable guidelines into hard constraints, verification hooks, or static checks instead of leaving them as prompt-only guidance.
-- **Process-rule compilation** — extend model-assisted rule authoring so `sc rules add` can also produce deterministic workflow rules, such as always running verification before task completion, rather than only access constraints or prompt guidance.
-- **Unified rule taxonomy and ingestion** — introduce one canonical rule model that classifies inputs from `--spec`, project policy files (`CLAUDE.md` / `AGENTS.md`), and `sc rules add` into task contracts, behavioral guidance, deterministic access constraints, or deterministic process rules, with source tracked separately from enforcement.
-- **Replace regex-style rules import** — upgrade `sc rules import` from deterministic phrase/path matching to the same model-assisted line-by-line compilation used by `sc rules add`, while keeping local validation and explicit confirmation before persistence.
+- **Process-rule compilation** — extend model-assisted rule authoring so `hw rules add` can also produce deterministic workflow rules, such as always running verification before task completion, rather than only access constraints or prompt guidance.
+- **Unified rule taxonomy and ingestion** — introduce one canonical rule model that classifies inputs from `--spec`, project policy files (`CLAUDE.md` / `AGENTS.md`), and `hw rules add` into task contracts, behavioral guidance, deterministic access constraints, or deterministic process rules, with source tracked separately from enforcement.
+- **Replace regex-style rules import** — upgrade `hw rules import` from deterministic phrase/path matching to the same model-assisted line-by-line compilation used by `hw rules add`, while keeping local validation and explicit confirmation before persistence.
 - **Verifiability-first policy taxonomy** — classify all rules as deterministic enforced, deterministic advisory, or best-effort.
 - **Policy expectation disclosure** — when rules are added/imported, tell the user exactly how they will be enforced.
 - **Vague-scope resolution** — require disambiguation for policies like “frontend style files” before persisting them.

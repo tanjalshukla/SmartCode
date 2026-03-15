@@ -12,6 +12,7 @@ from anthropic import AnthropicBedrock
 
 from .checkin_quality import build_checkin_repair_prompt, evaluate_checkin_quality
 from .schema import (
+    AutonomyRationale,
     CheckInMessage,
     IntentDeclaration,
     LogicNoteCompilation,
@@ -94,6 +95,10 @@ LOGIC_NOTE_SCHEMA = {
     "notes": [
         "string (short note capturing what functionality changed, what decision mattered, or what preference shaped the work)"
     ]
+}
+
+AUTONOMY_RATIONALE_SCHEMA = {
+    "rationale": "string|null (one concise sentence, max ~18 words)"
 }
 
 
@@ -293,6 +298,61 @@ class ClaudeClient:
                     f"Previous error: {exc}"
                 )
         raise RuntimeError("Failed to obtain valid logic note compilation.")
+
+    def generate_autonomy_rationale(
+        self,
+        *,
+        stage: str,
+        task: str,
+        files: list[str],
+        policy_summaries: list[str],
+        behavioral_guidelines: list[str],
+        feedback_snippets: list[str],
+        logic_notes: list[str],
+        max_tokens: int = 120,
+    ) -> AutonomyRationale:
+        schema_json = json.dumps(AUTONOMY_RATIONALE_SCHEMA, indent=2)
+        session = ClaudeSession(
+            "You explain why a deterministic local governance layer allowed work to continue without a check-in. Return JSON only."
+        )
+        session.add_user(
+            "Return JSON only.\n"
+            "Explain why Hedwig can continue without a check-in in one short sentence.\n"
+            "You are only explaining a decision already made by the CLI. Do not change or justify the policy itself.\n\n"
+            "Schema:\n"
+            f"{schema_json}\n\n"
+            "Rules:\n"
+            "- Keep the rationale under 18 words.\n"
+            "- Avoid scores, thresholds, and internal jargon.\n"
+            "- Prefer referencing developer guidance or prior related work when clearly relevant.\n"
+            "- If guidance is irrelevant, summarize the strongest plain-language reason from the policy summaries.\n"
+            "- Do not mention implementation details like SQLite, leases, or prompt tokens.\n"
+            "- Return null only if no concise rationale can be formed.\n\n"
+            f"Stage: {stage}\n"
+            f"Task: {task}\n"
+            f"Files: {', '.join(files) if files else 'none'}\n"
+            "Policy summaries:\n"
+            + ("\n".join(f"- {item}" for item in policy_summaries) if policy_summaries else "- none")
+            + "\nBehavioral guidance:\n"
+            + ("\n".join(f"- {item}" for item in behavioral_guidelines) if behavioral_guidelines else "- none")
+            + "\nRelevant prior feedback:\n"
+            + ("\n".join(f"- {item}" for item in feedback_snippets) if feedback_snippets else "- none")
+            + "\nRelevant prior functionality notes:\n"
+            + ("\n".join(f"- {item}" for item in logic_notes) if logic_notes else "- none")
+        )
+        for attempt in range(2):
+            raw = self._call(session, max_tokens=max_tokens, temperature=0.0)
+            session.add_assistant(raw)
+            try:
+                return AutonomyRationale.model_validate_json(raw)
+            except Exception as exc:
+                if attempt == 1:
+                    raise
+                session.add_user(
+                    "Return valid JSON only matching the provided schema. "
+                    f"Previous error: {exc}"
+                )
+        raise RuntimeError("Failed to obtain valid autonomy rationale.")
 
     def declare_intent(
         self,

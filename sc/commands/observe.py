@@ -73,7 +73,7 @@ def _format_trace_row(row: dict) -> list[str]:
             if row["review_duration_seconds"] is not None
             else "-"
         ),
-        "rubber"
+        "quick"
         if row["rubber_stamp"] == 1 and _is_approval_decision(str(row["user_decision"]))
         else "-",
         str(row["response_time_ms"] if row["response_time_ms"] is not None else "-"),
@@ -142,7 +142,7 @@ def traces(
         "Verify",
         "Diff",
         "Rev(s)",
-        "QS",
+        "Review",
         "Resp(ms)",
     ]
     table = Table(title="Recent Traces")
@@ -154,7 +154,7 @@ def traces(
 
 
 def explain(
-    trace_id: int = typer.Argument(..., help="Trace row id from `sc traces`."),
+    trace_id: int = typer.Argument(..., help="Trace row id from `hw observe traces`."),
 ):
     """Explain why a specific decision happened using stored trace context."""
     repo_root = require_repo_root()
@@ -207,7 +207,7 @@ def explain(
         print(f"Check-in initiator: {row['check_in_initiator']}")
     if row["review_duration_seconds"] is not None:
         duration = float(row["review_duration_seconds"])
-        label = " (rubber-stamp)" if row["rubber_stamp"] == 1 and _is_approval_decision(str(row["user_decision"])) else ""
+        label = " (quick approval)" if row["rubber_stamp"] == 1 and _is_approval_decision(str(row["user_decision"])) else ""
         print(f"Review duration: {duration:.2f}s{label}")
     if row["model_confidence_self_report"] is not None:
         print(f"Model confidence: {float(row['model_confidence_self_report']):.2f}")
@@ -443,11 +443,11 @@ def report(
     for key in sorted(decision_counts):
         print(f"  - {key}: {decision_counts[key]}")
     if checkin_quality:
-        print("Check-in usefulness:")
+        print("Check-in calibration:")
         for row in checkin_quality:
             print(
-                f"  - {row.initiator}: useful={row.useful}/{row.total} "
-                f"({row.useful_rate * 100:.1f}%), wasted={row.wasted}"
+                f"  - {row.initiator}: high-signal={row.useful}/{row.total} "
+                f"({row.useful_rate * 100:.1f}%), low-signal={row.wasted}"
             )
     if model_confidence_values:
         avg_conf = sum(model_confidence_values) / len(model_confidence_values)
@@ -456,9 +456,9 @@ def report(
             f"n={len(model_confidence_values)}, avg={avg_conf:.2f}"
         )
     print(
-        "Review quality: "
-        f"thoughtful approvals={thoughtful_approvals}, "
-        f"rubber-stamp approvals (<5s)={rubber_stamp_approvals}"
+        "Review timing: "
+        f"deliberate approvals={thoughtful_approvals}, "
+        f"quick approvals (<5s)={rubber_stamp_approvals}"
     )
     print(
         "Plan revisions: "

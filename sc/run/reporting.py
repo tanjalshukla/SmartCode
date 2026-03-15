@@ -5,7 +5,6 @@ from __future__ import annotations
 from rich import print
 from rich.prompt import Prompt
 
-from ..cli_shared import is_approval_decision as _is_approval_decision
 from ..trust_db import TrustDB
 from .ui import _render_file_list
 
@@ -19,19 +18,7 @@ def _render_run_summary(
     rows = trust_db.session_traces(repo_root, session_id)
     if not rows:
         return
-    total = len(rows)
     check_ins = sum(1 for row in rows if row["action_type"] == "check_in")
-    auto_approved = sum(
-        1 for row in rows if str(row["user_decision"]).startswith("auto_approve")
-    )
-    denied = sum(1 for row in rows if row["user_decision"] == "deny")
-    revisions = sum(1 for row in rows if row["user_decision"] == "revise")
-    feedback_count = sum(
-        1 for row in rows if row["user_feedback_text"] and str(row["user_feedback_text"]).strip()
-    )
-    rubber_stamp_approvals = sum(
-        1 for row in rows if row["rubber_stamp"] == 1 and _is_approval_decision(str(row["user_decision"]))
-    )
     apply_files = sorted(
         {
             str(row["file_path"])
@@ -48,21 +35,15 @@ def _render_run_summary(
             and str(row["change_type"]).strip()
         }
     )
-    print("\n[bold]Run summary[/bold]")
-    print(f"Session id={session_id}")
-    print(
-        f"Actions={total}, check-ins={check_ins}, auto-approved={auto_approved}, "
-        f"denied={denied}, revisions={revisions}"
-    )
-    print(
-        f"Developer feedback events={feedback_count}, "
-        f"rubber-stamp approvals (<5s)={rubber_stamp_approvals}"
-    )
+    print("\n[bold]Run complete[/bold]")
     if apply_files:
-        print("Apply-scope files:")
+        print("Updated files:")
         _render_file_list(apply_files)
+    if check_ins:
+        label = "check-in" if check_ins == 1 else "check-ins"
+        print(f"{check_ins} {label} during run.")
     if changed_patterns:
-        print("Observed change patterns:")
+        print("Change patterns:")
         for pattern in changed_patterns:
             print(f"  - {pattern}")
 

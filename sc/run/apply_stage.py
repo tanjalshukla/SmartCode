@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Apply-stage policy decisions and write/verification execution for `sc run`."""
+"""Apply-stage policy decisions and write/verification execution for `hw run`."""
 
 import hashlib
 import os
@@ -12,12 +12,16 @@ import typer
 from rich import print
 
 from ..agent_client import ClaudeClient
-from ..autonomy import adjusted_policy_thresholds
+from ..autonomy import (
+    adjusted_policy_thresholds,
+)
 from ..config import SAConfig, autonomy_profile
 from ..features import classify_change_pattern, estimate_blast_radius, is_security_sensitive
 from ..policy import PolicyDecision, within_scope_budget
 from .helpers import (
+    AutonomyHistoryContext,
     StudyContext,
+    _approved_action_context,
     _apply_feedback_learning,
     _collect_change_metrics,
     _constraint_index,
@@ -30,6 +34,7 @@ from .ui import (
     _prompt_permanent,
     _render_autonomy_rationale,
     _render_file_list,
+    _render_history_context,
     _render_policy_snapshot,
     _summarize_autonomy_rationale,
 )
@@ -268,9 +273,28 @@ def _evaluate_apply_stage(
         histories=apply_histories,
         policies=apply_policies,
     )
+    history_context: AutonomyHistoryContext | None = None
+    rationale = None
+    if not prompt_required and not denied_apply and not milestone_reasons:
+        history_context, rationale = _approved_action_context(
+            trust_db=trust_db,
+            repo_root=repo_root_str,
+            stage="apply",
+            task=task,
+            files=touched_files,
+            histories=apply_histories,
+            policies=apply_policies,
+            client=client,
+        )
+    if history_context is not None:
+        _render_history_context(
+            "apply",
+            history_context.quantitative,
+            history_context.qualitative,
+        )
     _render_autonomy_rationale(
         "apply",
-        _summarize_autonomy_rationale(
+        rationale or _summarize_autonomy_rationale(
             files=touched_files,
             policies=apply_policies,
             milestone_reasons=milestone_reasons,

@@ -1,17 +1,36 @@
 # Python
 __pycache__/
+**/__pycache__/
 *.pyc
 *.pyo
 *.pyd
+.pytest_cache/
+.coverage
+htmlcov/
 
 # Virtualenv
 .venv/
 
 # Local runtime state
 .sc/
+.sc/exports/
 
 # OS
 .DS_Store
 
 # Editor workspaces
 *.code-workspace
+
+# Local paper build artifacts
+paper.zip
+paper/*.aux
+paper/*.bbl
+paper/*.bcf
+paper/*.blg
+paper/*.fdb_latexmk
+paper/*.fls
+paper/*.log
+paper/*.out
+paper/*.pdf
+paper/*.run.xml
+paper/*.synctex.gz

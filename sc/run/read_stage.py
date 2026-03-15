@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Read-request evaluation and enforcement for `sc run`."""
+"""Read-request evaluation and enforcement for `hw run`."""
 
 import time
 from pathlib import Path
@@ -9,11 +9,15 @@ import typer
 from rich import print
 
 from ..agent_client import ClaudeClient
-from ..autonomy import adjusted_policy_thresholds
+from ..autonomy import (
+    adjusted_policy_thresholds,
+)
 from ..config import SAConfig, autonomy_profile
 from ..policy import PolicyDecision
 from .helpers import (
+    AutonomyHistoryContext,
     StudyContext,
+    _approved_action_context,
     _apply_feedback_learning,
     _append_file_context,
     _auto_read_user_decision,
@@ -26,6 +30,7 @@ from .ui import (
     _prompt_read,
     _render_autonomy_rationale,
     _render_file_list,
+    _render_history_context,
     _render_policy_snapshot,
     _summarize_autonomy_rationale,
 )
@@ -202,9 +207,28 @@ def _process_read_request(
         histories=read_histories,
         policies=read_policies,
     )
+    history_context: AutonomyHistoryContext | None = None
+    rationale = None
+    if not needs_prompt and not denied_reads:
+        history_context, rationale = _approved_action_context(
+            trust_db=trust_db,
+            repo_root=repo_root_str,
+            stage="read",
+            task=task,
+            files=requested,
+            histories=read_histories,
+            policies=read_policies,
+            client=client,
+        )
+    if history_context is not None:
+        _render_history_context(
+            "read",
+            history_context.quantitative,
+            history_context.qualitative,
+        )
     _render_autonomy_rationale(
         "read",
-        _summarize_autonomy_rationale(files=requested, policies=read_policies),
+        rationale or _summarize_autonomy_rationale(files=requested, policies=read_policies),
     )
 
     if denied_reads:
@@ -243,14 +267,14 @@ def _process_read_request(
     auto_without_lease = [path for path in auto_reads if read_leases[path] is None]
     if needs_prompt:
         prompt_started = time.time()
-        approved, read_feedback = _prompt_read(needs_prompt, request.reason)
+        approved, remembered, read_feedback = _prompt_read(needs_prompt, request.reason)
         response_time_ms = int((time.time() - prompt_started) * 1000)
         trust_db.record_decision(
             repo_root_str,
             task,
             "read",
             approved=approved,
-            remembered=False,
+            remembered=remembered,
             planned_files=requested,
             touched_files=requested,
         )
@@ -293,8 +317,9 @@ def _process_read_request(
             raise typer.Exit(code=0)
 
         trust_db.add_permanent_read_leases(repo_root_str, auto_without_lease, source="policy_auto")
-        prompt_grants = [path for path in needs_prompt if read_constraints.get(path) is None]
-        trust_db.add_permanent_read_leases(repo_root_str, prompt_grants, source="user_permanent")
+        if remembered:
+            prompt_grants = [path for path in needs_prompt if read_constraints.get(path) is None]
+            trust_db.add_permanent_read_leases(repo_root_str, prompt_grants, source="user_permanent")
 
         _record_auto_read_traces(
             trust_db=trust_db,
@@ -318,7 +343,7 @@ def _process_read_request(
             files=needs_prompt,
             histories=read_histories,
             policies=read_policies,
-            user_decision="approve",
+            user_decision="approve_and_remember" if remembered else "approve",
             response_time_ms=response_time_ms,
             change_types={path: None for path in needs_prompt},
             diff_sizes={path: None for path in needs_prompt},

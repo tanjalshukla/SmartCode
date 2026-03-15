@@ -1,46 +1,61 @@
-# Reading Order
+# Hedwig Reading Order
 
-## 1) Entry points
+This repo is small enough to read end to end, but the quickest path to
+the core behavior is:
+
+## 1. CLI entry points
+
 1. `sc/__main__.py`
 2. `sc/cli.py`
 3. `sc/commands/admin.py`
 4. `sc/commands/observe.py`
 
-## 2) Core run loop
+## 2. Governed run loop
+
 1. `sc/run/command.py`
 2. `sc/run/read_stage.py`
 3. `sc/run/model.py`
 4. `sc/run/apply_stage.py`
 5. `sc/run/ui.py`
-6. `sc/run/traces.py`
-7. `sc/run/reporting.py`
-8. `sc/run/helpers.py`
+6. `sc/run/reporting.py`
+7. `sc/run/helpers.py`
 
-## 3) Policy + trust
+## 3. Policy, trust, and adaptation
+
 1. `sc/policy.py`
-2. `sc/features.py`
+2. `sc/autonomy.py`
 3. `sc/plan_gate.py`
-4. `sc/prompt_builder.py`
-5. `sc/trust_db.py`
+4. `sc/trust_db.py`
+5. `sc/prompt_builder.py`
 
-## 4) Model protocol + validation
+## 4. Structured model protocol
+
 1. `sc/schema.py`
 2. `sc/agent_client.py`
 3. `sc/checkin_quality.py`
 4. `sc/session.py`
 5. `sc/session_feedback.py`
 
-## 5) Infra helpers
+## 5. Supporting modules
+
 1. `sc/constraints.py`
-2. `sc/verification.py`
-3. `sc/patch.py`
+2. `sc/features.py`
+3. `sc/verification.py`
 4. `sc/repo.py`
 5. `sc/config.py`
 6. `sc/cli_shared.py`
 
-## 6) Test pass order
-1. `tests/test_schema_checkin.py`
-2. `tests/test_policy.py` + `tests/test_features.py` + `tests/test_phase.py`
-3. `tests/test_constraints.py` + `tests/test_plan_gate.py` + `tests/test_prompt_builder.py`
-4. `tests/test_trust_db_*.py`
-5. `tests/test_verification.py` + `tests/test_session*.py`
+## 6. Demo fixture
+
+1. `demo_task_api/README.md`
+2. `demo_task_api/DEMO_FLOW.md`
+3. `demo_task_api/task_api/api.py`
+4. `demo_task_api/task_api/service.py`
+5. `demo_task_api/tests/test_api.py`
+
+## 7. Focused tests
+
+1. `tests/test_run_history_context.py`
+2. `tests/test_run_reporting.py`
+3. `tests/test_run_ui.py`
+4. `demo_task_api/tests/test_api.py`

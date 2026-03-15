@@ -68,8 +68,8 @@ def decide_action(
         reasons.append(f"-quality:edit distance {policy_input.avg_edit_distance:.2f}")
 
     # --- risk signals ---
-    # TODO: note that these are all guessed heuristics which must be updated
-    # ideally this is replaced by some model which we have trained on data after lab study
+    # Initial risk weights are heuristic priors; the lab study is intended to
+    # provide data for replacing or recalibrating them later.
     if policy_input.diff_size > 80:
         score -= 0.8
         reasons.append("-risk:large diff")

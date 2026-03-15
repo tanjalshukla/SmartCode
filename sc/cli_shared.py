@@ -12,7 +12,7 @@ def resolve_config(repo_root: Path, model_id: str | None, region: str | None) ->
     if config is None:
         env_model = env_model_id()
         if not model_id and not env_model:
-            raise typer.BadParameter("Missing model id. Run `sc init` or pass --model-id.")
+            raise typer.BadParameter("Missing model id. Run `hw init` or pass --model-id.")
         return SAConfig(
             model_id=model_id or env_model,  # type: ignore[arg-type]
             aws_region=region or default_region(),

@@ -151,3 +151,19 @@ class LogicNoteCompilation(BaseModel):
             if text:
                 normalized.append(text[:280])
         return normalized[:3]
+
+
+class AutonomyRationale(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rationale: str | None = None
+
+    @field_validator("rationale")
+    @classmethod
+    def validate_rationale(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        text = " ".join(value.split()).strip()
+        if not text:
+            return None
+        return text[:180]

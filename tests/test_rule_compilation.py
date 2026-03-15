@@ -117,7 +117,15 @@ class RuleCompilationTests(unittest.TestCase):
                     "sc.commands.admin._resolve_config_or_exit",
                     return_value=SAConfig(model_id="model", aws_region="us-east-1"),
                 ), \
-                patch("sc.commands.admin._compile_rule_with_model", return_value=parsed):
+                patch("sc.commands.admin._compile_rule_with_model", return_value=parsed), \
+                patch("sc.commands.admin.ClaudeClient") as mock_client_cls:
+                mock_client = mock_client_cls.return_value
+                mock_client.summarize_autonomy_feedback.return_value = {
+                    "prefer_fewer_checkins": True,
+                    "allowed_checkin_topics": ["api"],
+                    "skip_low_risk_plan_checkpoint": False,
+                    "scoped_paths": [],
+                }
                 add_rule(
                     "Only check in for API changes in task_api/api.py.",
                     source="manual_rule",
@@ -132,6 +140,9 @@ class RuleCompilationTests(unittest.TestCase):
             self.assertEqual(constraints[0].path_pattern, "task_api/api.py")
             self.assertEqual(len(guidelines), 1)
             self.assertEqual(guidelines[0].guideline, "Only check in for API changes.")
+            prefs = db.autonomy_preferences(str(repo_root))
+            self.assertTrue(prefs.prefer_fewer_checkins)
+            self.assertEqual(prefs.allowed_checkin_topics, ("api",))
 
 
 if __name__ == "__main__":

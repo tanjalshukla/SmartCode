@@ -1,15 +1,55 @@
 from __future__ import annotations
 
-"""Terminal-facing prompts and rendering helpers for `sc run`."""
+"""Terminal-facing prompts and rendering helpers for `hw run`."""
 
+from contextlib import contextmanager
 import re
+import threading
+import textwrap
 
 from rich import print
+from rich.console import Console
 from rich.prompt import Prompt
 
 from ..policy import PolicyDecision
 from ..schema import IntentDeclaration, WorkflowPhase
 from ..trust_db import PolicyHistory
+
+_CONSOLE = Console()
+_MODEL_STATUS_PHRASES: dict[str, tuple[str, ...]] = {
+    "intent": ("reasoning", "mapping constraints", "planning"),
+    "updates": ("drafting edits", "checking scope", "preparing patch"),
+    "rules": ("compiling rule", "classifying governance", "extracting guidance"),
+    "preferences": ("learning preferences", "updating guidance", "refining autonomy"),
+}
+
+
+@contextmanager
+def _model_status(stage: str):
+    phrases = _MODEL_STATUS_PHRASES.get(stage, ("working",))
+    base_text = f"[cyan]Hedwig[/cyan] [dim]{phrases[0]}[/dim]"
+    stop_event = threading.Event()
+    try:
+        status = _CONSOLE.status(base_text, spinner="dots", transient=True)
+    except TypeError:
+        # Older Rich versions don't support `transient`.
+        status = _CONSOLE.status(base_text, spinner="dots")
+
+    def _animate() -> None:
+        index = 1
+        while not stop_event.wait(0.8):
+            phrase = phrases[index % len(phrases)]
+            status.update(f"[cyan]Hedwig[/cyan] [dim]{phrase}[/dim]")
+            index += 1
+
+    with status:
+        worker = threading.Thread(target=_animate, daemon=True)
+        worker.start()
+        try:
+            yield
+        finally:
+            stop_event.set()
+            worker.join(timeout=0.2)
 
 
 def _render_file_list(files: list[str]) -> None:
@@ -36,7 +76,7 @@ def _prompt_approval(
         prompt = "Approve once (a), approve & remember (r), deny (d)"
     else:
         prompt = "Approve once (a), deny (d)"
-    response = Prompt.ask(prompt, choices=choices, default="d")
+    response = Prompt.ask(prompt, choices=choices)
     if response == "a":
         return True, False, None
     if response == "r":
@@ -46,17 +86,22 @@ def _prompt_approval(
     return False, False, note
 
 
-def _prompt_read(files: list[str], reason: str | None) -> tuple[bool, str | None]:
+def _prompt_read(files: list[str], reason: str | None) -> tuple[bool, bool, str | None]:
     print("\n[bold]Read request[/bold]")
     if reason:
         print(f"Reason: {reason}")
     print("Agent requests to read:")
     _render_file_list(files)
-    response = Prompt.ask("Approve (a) or deny (d)", choices=["a", "d"], default="d")
+    response = Prompt.ask(
+        "Approve once (a), approve & remember (r), or deny (d)",
+        choices=["a", "r", "d"],
+    )
     if response == "a":
-        return True, None
+        return True, False, None
+    if response == "r":
+        return True, True, None
     note = _prompt_optional_feedback("Optional reason for denying this read")
-    return False, note
+    return False, False, note
 
 
 def _render_intent_summary(declaration: IntentDeclaration) -> None:
@@ -90,7 +135,6 @@ def _prompt_plan_checkpoint(
     decision = Prompt.ask(
         "Approve plan (a), request revision (v), or deny task (d)",
         choices=["a", "v", "d"],
-        default="d",
     )
     if decision == "a":
         return "approve", None
@@ -115,7 +159,6 @@ def _confirm_read_missing(missing_files: list[str]) -> bool:
     response = Prompt.ask(
         "Files don't exist yet; proceed with create workflow? (a)pprove/(d)eny",
         choices=["a", "d"],
-        default="d",
     )
     return response == "a"
 
@@ -123,7 +166,7 @@ def _confirm_read_missing(missing_files: list[str]) -> bool:
 def _confirm_create_files(missing_files: list[str]) -> bool:
     print("\n[bold yellow]Patch will create new files[/bold yellow]")
     _render_file_list(missing_files)
-    response = Prompt.ask("Allow new file creation? (a)pprove/(d)eny", choices=["a", "d"], default="d")
+    response = Prompt.ask("Allow new file creation? (a)pprove/(d)eny", choices=["a", "d"])
     return response == "a"
 
 
@@ -141,6 +184,9 @@ def _user_friendly_reason(policy: PolicyDecision) -> str:
     """Translate the primary policy reason into plain language."""
     if not policy.reasons:
         return ""
+    for reason in policy.reasons:
+        if reason.startswith("~guidance:"):
+            return reason.split(":", 1)[1]
     first = policy.reasons[0]
     if first.startswith("hard constraint: always_deny"):
         return "blocked by your rule"
@@ -204,6 +250,29 @@ def _render_autonomy_rationale(stage: str, rationale: str | None) -> None:
     if not rationale:
         return
     print(f"[dim]Autonomy rationale ({stage}): {rationale}[/dim]")
+
+
+def _render_history_context(
+    stage: str,
+    quantitative: str | None,
+    qualitative: str | None,
+) -> None:
+    if not quantitative and not qualitative:
+        return
+    if quantitative:
+        summary = textwrap.shorten(quantitative, width=110, placeholder="...")
+        print(f"[dim]Reduced friction ({stage}): {summary}[/dim]")
+    if qualitative:
+        summary = textwrap.shorten(qualitative, width=140, placeholder="...")
+        if summary.startswith("guidance: "):
+            summary = f"Retrieved guidance: {summary.removeprefix('guidance: ')}"
+        elif summary.startswith("feedback: "):
+            summary = f"Retrieved feedback: {summary.removeprefix('feedback: ')}"
+        elif summary.startswith("related note: "):
+            summary = f"Retrieved note: {summary.removeprefix('related note: ')}"
+        else:
+            summary = f"Retrieved context: {summary}"
+        print(f"[dim]{summary}[/dim]")
 
 
 def _summarize_autonomy_rationale(
